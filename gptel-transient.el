@@ -27,6 +27,7 @@
 ;;; Code:
 (require 'cl-lib)
 (require 'gptel)
+(require 'gptel-context-manager)
 (require 'transient)
 
 (declare-function ediff-regions-internal "ediff")
