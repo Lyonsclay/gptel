@@ -90,24 +90,26 @@
     map)
   "Keymap for =gptel-context-manager-mode'.")
 
-;; Evil integration: use normal state and bind keys for this mode
-;; This preserves Evil functionality (including SPC leader) while adding our bindings
-(with-eval-after-load 'evil
-  (evil-define-key 'normal gptel-context-manager-mode-map
-    "d" #'gptel-context-manager-mark-delete
-    "u" #'gptel-context-manager-unmark
-    "x" #'gptel-context-manager-execute
-    "D" #'gptel-context-manager-delete
-    "gr" #'revert-buffer
-    (kbd "RET") #'gptel-context-manager-visit
-    "s" #'gptel-context-manager-switch-buffer
-    "b" #'gptel-context-manager-switch-buffer
-    "K" #'gptel-context-manager-move-up
-    "J" #'gptel-context-manager-move-down
-    "q" #'gptel-context-manager-quit
-    "?" #'gptel-context-manager-quick-help)
-  ;; Ensure we start in normal state, not emacs state
-  (evil-set-initial-state 'gptel-context-manager-mode 'normal))
+;; Evil integration: use normal state and bind keys for this mode.
+;; We use =eval-after-load' with a quoted lambda to avoid byte-compilation
+;; issues with the =evil-define-key' macro.
+(eval-after-load 'evil
+  '(progn
+     (evil-define-key 'normal gptel-context-manager-mode-map
+       "d" #'gptel-context-manager-mark-delete
+       "u" #'gptel-context-manager-unmark
+       "x" #'gptel-context-manager-execute
+       "D" #'gptel-context-manager-delete
+       "gr" #'revert-buffer
+       (kbd "RET") #'gptel-context-manager-visit
+       "s" #'gptel-context-manager-switch-buffer
+       "b" #'gptel-context-manager-switch-buffer
+       "K" #'gptel-context-manager-move-up
+       "J" #'gptel-context-manager-move-down
+       "q" #'gptel-context-manager-quit
+       "?" #'gptel-context-manager-quick-help)
+     ;; Ensure we start in normal state, not emacs state
+     (evil-set-initial-state 'gptel-context-manager-mode 'normal)))
 
 ;;;###autoload
 (defun gptel-context-manager (&optional buffer)
