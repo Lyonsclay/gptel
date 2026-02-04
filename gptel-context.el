@@ -503,7 +503,7 @@ base64-encoded and prepended to the first user prompt."
            when (and (stringp path) (plist-get props :mime))
            collect (cons :media context)))
 
-(cl-defun gptel-context--add-region (buffer region-beginning region-end &optional advance)
+(cl-defun gptel-context--add-region (buffer region-beginning region-end &optional advance target)
   "Add region delimited by REGION-BEGINNING, REGION-END in BUFFER as context.
 
 If ADVANCE is non-nil, the context overlay envelopes changes at
@@ -511,11 +511,10 @@ the beginning and end.
 TARGET is the buffer whose context to modify.  If nil, uses global context."
 
   ;; Remove existing contexts in the same region, if any.
-  (mapc #'gptel-context-remove
-        (gptel-context--in-region buffer region-beginning region-end))
-  (prog1 (with-current-buffer buffer
-           (gptel-context--make-overlay region-beginning region-end advance target))
-    (message "Region added to context buffer.")))
+  (dolist (ov (gptel-context--in-region buffer region-beginning region-end))
+    (gptel-context-remove ov target))
+  (with-current-buffer buffer
+    (gptel-context--make-overlay region-beginning region-end advance target)))
 
 (defun gptel-context--in-region (buffer start end)
   "Return the list of context overlays in the given region, if any, in BUFFER.

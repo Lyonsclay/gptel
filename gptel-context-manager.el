@@ -31,6 +31,9 @@
 ;; Keybindings:
 ;;   d       - Mark item for deletion
 ;;   u       - Unmark item
+;;   U       - Unmark all items
+;;   t       - Toggle mark on item
+;;   % m     - Mark items matching regexp
 ;;   x       - Execute deletions (delete marked items)
 ;;   D       - Delete item at point immediately
 ;;   RET     - Visit the source of context item
@@ -38,6 +41,9 @@
 ;;   M-p / K - Move item up
 ;;   M-n / J - Move item down
 ;;   g / gr  - Refresh the list
+;;   a       - Add file to context
+;;   B       - Add buffer to context
+;;   r       - Add region (instructions)
 ;;   q       - Quit
 ;;   ?       - Quick help
 
@@ -48,12 +54,10 @@
 (require 'tabulated-list)
 (require 'cl-lib)
 
-;; Declare evil functions to avoid compiler warnings
-(declare-function evil-define-key "evil-core")
-(declare-function evil-set-initial-state "evil-core")
+(eval-when-compile
+  (require 'evil-core))
 
 ;; Silence byte-compiler warnings for Evil functions
-(declare-function evil-define-key "evil-core" t)
 (declare-function evil-set-initial-state "evil-core" (mode state))
 
 (defvar-local gptel-context-manager--target-buffer nil
@@ -63,19 +67,63 @@
   "Manager for gptel context."
   :group 'gptel)
 
+(defface gptel-context-manager-header-face
+  '((t :inherit font-lock-keyword-face :weight bold))
+  "Face for the target buffer header in context manager."
+  :group 'gptel-context-manager)
+
+(defface gptel-context-manager-target-buffer-face
+  '((t :inherit font-lock-constant-face :weight bold))
+  "Face for the target buffer name in context manager."
+  :group 'gptel-context-manager)
+
+(defface gptel-context-manager-mark-face
+  '((t :inherit dired-mark))
+  "Face for deletion marks in context manager."
+  :group 'gptel-context-manager)
+
+(defface gptel-context-manager-marked-face
+  '((t :inherit dired-marked))
+  "Face for marked items in context manager."
+  :group 'gptel-context-manager)
+
+(defface gptel-context-manager-type-buffer-face
+  '((t :inherit font-lock-type-face))
+  "Face for buffer type items in context manager."
+  :group 'gptel-context-manager)
+
+(defface gptel-context-manager-type-file-face
+  '((t :inherit font-lock-string-face))
+  "Face for file type items in context manager."
+  :group 'gptel-context-manager)
+
+(defface gptel-context-manager-name-face
+  '((t :inherit font-lock-function-name-face))
+  "Face for item names in context manager."
+  :group 'gptel-context-manager)
+
+(defface gptel-context-manager-details-face
+  '((t :inherit font-lock-comment-face))
+  "Face for item details in context manager."
+  :group 'gptel-context-manager)
+
+(defface gptel-context-manager-empty-face
+  '((t :inherit font-lock-comment-face :slant italic))
+  "Face for empty context message in context manager."
+  :group 'gptel-context-manager)
+
 (define-derived-mode gptel-context-manager-mode tabulated-list-mode "GPTel Context"
   "Major mode for managing gptel context.
 
 \\{gptel-context-manager-mode-map}"
   :interactive nil
   (setq tabulated-list-format [("M" 2 t)
-                               ("Type" 10 nil)
-                               ("Name" 40 t)
-                               ("Details" 30 nil)])
+                               ("Context Item" 0 t)])
   (setq tabulated-list-padding 1)
   (setq tabulated-list-sort-key nil)
   (add-hook 'tabulated-list-revert-hook #'gptel-context-manager--refresh nil t)
-  (tabulated-list-init-header))
+  (tabulated-list-init-header)
+  (gptel-context-manager--update-header-line))
 
 (defvar gptel-context-manager-mode-map
   (let ((map (make-sparse-keymap)))
@@ -92,10 +140,13 @@
     (define-key map (kbd "q") #'gptel-context-manager-quit)
     (define-key map (kbd "?") #'gptel-context-manager-quick-help)
     (define-key map (kbd "a") #'gptel-context-manager-add-file)
-    (define-key map (kbd "r") #'gptel-context-manager-add-region)
     (define-key map (kbd "B") #'gptel-context-manager-add-buffer)
+    (define-key map (kbd "r") #'gptel-context-manager-add-region)
+    (define-key map (kbd "U") #'gptel-context-manager-unmark-all)
+    (define-key map (kbd "t") #'gptel-context-manager-toggle-mark)
+    (define-key map (kbd "% m") #'gptel-context-manager-mark-regexp)
     map)
-  "Keymap for =gptel-context-manager-mode'.")
+  "Keymap for `gptel-context-manager-mode'.")
 
 ;; Evil integration: use normal state and bind keys for this mode.
 ;; We use =eval-after-load' with a quoted lambda to avoid byte-compilation
@@ -119,7 +170,10 @@
       "?" #'gptel-context-manager-quick-help
       "a" #'gptel-context-manager-add-file
       "r" #'gptel-context-manager-add-region
-      "B" #'gptel-context-manager-add-buffer)))
+      "B" #'gptel-context-manager-add-buffer
+      "U" #'gptel-context-manager-unmark-all
+      "t" #'gptel-context-manager-toggle-mark
+      "% m" #'gptel-context-manager-mark-regexp)))
 
 (with-eval-after-load 'evil
   (gptel-context-manager--setup-evil))
@@ -137,8 +191,31 @@ interface for viewing, deleting, and reordering context items."
       (gptel-context-manager-mode)
       (setq gptel-context-manager--target-buffer target)
       (gptel-context-manager--refresh)
-      (tabulated-list-print))
+      (tabulated-list-print)
+      (gptel-context-manager--update-header-line))
     (switch-to-buffer buf)))
+
+(defun gptel-context-manager--update-header-line ()
+  "Update the header line to show target buffer information."
+  (setq header-line-format
+        (if (buffer-live-p gptel-context-manager--target-buffer)
+            (list
+             (propertize " Target: " 'face 'gptel-context-manager-header-face)
+             (propertize (buffer-name gptel-context-manager--target-buffer)
+                         'face 'gptel-context-manager-target-buffer-face)
+             (propertize
+              (if (local-variable-p 'gptel-context gptel-context-manager--target-buffer)
+                  " (local context)"
+                " (global context)")
+              'face 'gptel-context-manager-details-face)
+             (propertize
+              (format "  |  %d item(s)"
+                      (length (buffer-local-value 'gptel-context
+                                                  gptel-context-manager--target-buffer)))
+              'face 'gptel-context-manager-details-face))
+          (list (propertize " Target buffer no longer exists"
+                            'face 'error)))))
+
 
 (defun gptel-context-manager--refresh ()
   "Refresh the context list from the target buffer."
@@ -146,13 +223,8 @@ interface for viewing, deleting, and reordering context items."
       (progn
         (setq tabulated-list-entries nil)
         (message "Target buffer no longer exists"))
-    ;; Update mode line to show which buffer we are managing
-    (setq mode-line-process
-          (list (format " [%s%s]"
-                        (buffer-name gptel-context-manager--target-buffer)
-                        (if (local-variable-p 'gptel-context gptel-context-manager--target-buffer)
-                            ":Local" ""))))
     (let ((context (buffer-local-value 'gptel-context gptel-context-manager--target-buffer)))
+      (gptel-context-manager--update-header-line)
       (setq tabulated-list-entries
             (seq-map-indexed #'gptel-context-manager--make-entry context)))))
 
@@ -160,22 +232,11 @@ interface for viewing, deleting, and reordering context items."
   "Create a tabulated list entry from context ITEM.
 _INDEX is the position in the context list (unused)."
   (let* ((source (if (consp item) (car item) item))
-         (props (if (consp item) (cdr item) nil))
-         (type (if (bufferp source) "Buffer" "File"))
-         (name (if (bufferp source) (buffer-name source) (abbreviate-file-name source)))
-         (details (gptel-context-manager--details source props)))
-    (list item (vector "" type name details))))
-
-(defun gptel-context-manager--details (source props)
-  "Generate details string for SOURCE with PROPS."
-  (cond
-   ((bufferp source)
-    (let ((ovs (plist-get props :overlays)))
-      (if ovs (format "%d overlay%s" (length ovs) (if (= (length ovs) 1) "" "s"))
-        "Full buffer")))
-   ((stringp source)
-    (or (plist-get props :mime) "Text"))
-   (t "")))
+         (is-buffer (bufferp source))
+         (name (if is-buffer (buffer-name source) (abbreviate-file-name source)))
+         (entry (vector ""
+                        (propertize name 'face 'gptel-context-manager-name-face))))
+    (list item entry)))
 
 (defun gptel-context-manager-quit ()
   "Quit the context manager."
@@ -185,15 +246,7 @@ _INDEX is the position in the context list (unused)."
 (defun gptel-context-manager-quick-help ()
   "Show quick help for context manager."
   (interactive)
-  (message
-   (substitute-command-keys
-    "\\[gptel-context-manager-mark-delete]:mark  \
-\\[gptel-context-manager-unmark]:unmark  \
-\\[gptel-context-manager-execute]:exec  \
-\\[gptel-context-manager-delete]:del  \
-\\[gptel-context-manager-switch-buffer]:switch  \
-\\[gptel-context-manager-visit]:visit  \
-\\[gptel-context-manager-move-up]/\\[gptel-context-manager-move-down]:move")))
+  (message "d:mark  u:unmark  U:unmark-all  t:toggle  %%m:mark-re  x:exec  D:del  M-p/M-n:move  RET:visit  s:switch  a:+file  B:+buf  r:+region  g:refresh  q:quit"))
 
 (defun gptel-context-manager-switch-buffer (buffer)
   "Switch the context manager to view BUFFER."
@@ -205,13 +258,49 @@ _INDEX is the position in the context list (unused)."
   "Mark the entry at point for deletion."
   (interactive)
   (when (tabulated-list-get-id)
-    (tabulated-list-put-tag "D" t)))
+    (tabulated-list-put-tag (propertize "D" 'face 'gptel-context-manager-mark-face) t)))
 
 (defun gptel-context-manager-unmark ()
   "Unmark the entry at point."
   (interactive)
   (when (tabulated-list-get-id)
     (tabulated-list-put-tag "" t)))
+
+(defun gptel-context-manager-unmark-all ()
+  "Unmark all entries."
+  (interactive)
+  (save-excursion
+    (goto-char (point-min))
+    (while (not (eobp))
+      (when (tabulated-list-get-id)
+        (tabulated-list-put-tag ""))
+      (forward-line 1)))
+  (message "All marks removed"))
+
+(defun gptel-context-manager-toggle-mark ()
+  "Toggle the deletion mark on the entry at point."
+  (interactive)
+  (when-let* ((item (tabulated-list-get-id)))
+    (if (eq (char-after (line-beginning-position)) ?D)
+        (tabulated-list-put-tag "" t)
+      (tabulated-list-put-tag (propertize "D" 'face 'gptel-context-manager-mark-face) t))))
+
+(defun gptel-context-manager-mark-regexp (regexp)
+   "Mark all entries whose name matches REGEXP."
+  (interactive "sMark items matching regexp: ")
+  (let ((count 0))
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (when-let* ((item (tabulated-list-get-id)))
+          (let* ((source (if (consp item) (car item) item))
+                 (name (if (bufferp source) (buffer-name source)
+                         (if (stringp source) source ""))))
+            (when (string-match-p regexp name)
+              (tabulated-list-put-tag (propertize "D" 'face 'gptel-context-manager-mark-face))
+              (cl-incf count))))
+        (forward-line 1)))
+    (message "Marked %d item(s)" count)))
 
 (defun gptel-context-manager-delete ()
   "Delete the entry at point immediately."
@@ -222,7 +311,8 @@ _INDEX is the position in the context list (unused)."
       (revert-buffer))))
 
 (defun gptel-context-manager-execute ()
-  "Delete marked entries."
+  "Delete marked entries
+."
   (interactive)
   (let ((items nil))
     (save-excursion
@@ -263,7 +353,8 @@ _INDEX is the position in the context list (unused)."
      ((bufferp source)
       (if (buffer-live-p source)
           (progn
-            (pop-to-buffer source)
+            ;; Changed from pop-to-buffer to switch-to-buffer
+            (switch-to-buffer source)
             (let ((props (cdr-safe item)))
               (when-let* ((ov (car-safe (plist-get props :overlays))))
                 (when (overlayp ov)
@@ -271,8 +362,10 @@ _INDEX is the position in the context list (unused)."
         (message "Buffer no longer exists")))
      ((stringp source)
       (if (file-exists-p source)
-          (find-file-other-window source)
+          ;; Changed from find-file-other-window to find-file
+          (find-file source)
         (message "File does not exist: %s" source))))))
+
 
 (defun gptel-context-manager-move-up ()
   "Move the current item up in the context list."
@@ -324,16 +417,15 @@ Negative DELTA moves up, positive moves down."
 
 (defun gptel-context-manager-add-buffer (buffer)
   "Add BUFFER to the target buffer's context."
-  (interactive "bAdd buffer to context: ")
-  (unless (buffer-live-p gptel-context-manager--target-buffer)
-    (user-error "Target buffer no longer exists"))
-  (let ((buf (get-buffer buffer)))
-    (unless buf
-      (user-error "Buffer does not exist: %s" buffer))
-    (with-current-buffer buf
-      (gptel-context--add-region buf (point-min) (point-max) t
-                                 gptel-context-manager--target-buffer)))
-  (revert-buffer))
+  (interactive "Add buffer to context: ")
+  (let ((target gptel-context-manager--target-buffer))
+    (unless (buffer-live-p target)
+      (user-error "Target buffer no longer exists"))
+    (let ((buf (get-buffer buffer)))
+      (unless buf
+        (user-error "Buffer does not exist: %s" buffer))
+      (gptel-context--add-buffer buf target))
+    (revert-buffer)))
 
 (defun gptel-context-manager-add-region ()
   "Switch to a buffer to select a region to add to context."
