@@ -48,6 +48,10 @@
 (require 'tabulated-list)
 (require 'cl-lib)
 
+;; Declare evil functions to avoid compiler warnings
+(declare-function evil-define-key "evil-core")
+(declare-function evil-set-initial-state "evil-core")
+
 ;; Silence byte-compiler warnings for Evil functions
 (declare-function evil-define-key "evil-core" t)
 (declare-function evil-set-initial-state "evil-core" (mode state))
@@ -87,29 +91,38 @@
     (define-key map (kbd "M-n") #'gptel-context-manager-move-down)
     (define-key map (kbd "q") #'gptel-context-manager-quit)
     (define-key map (kbd "?") #'gptel-context-manager-quick-help)
+    (define-key map (kbd "a") #'gptel-context-manager-add-file)
+    (define-key map (kbd "r") #'gptel-context-manager-add-region)
+    (define-key map (kbd "B") #'gptel-context-manager-add-buffer)
     map)
   "Keymap for =gptel-context-manager-mode'.")
 
 ;; Evil integration: use normal state and bind keys for this mode.
 ;; We use =eval-after-load' with a quoted lambda to avoid byte-compilation
 ;; issues with the =evil-define-key' macro.
-(eval-after-load 'evil
-  '(progn
-     (evil-define-key 'normal gptel-context-manager-mode-map
-       "d" #'gptel-context-manager-mark-delete
-       "u" #'gptel-context-manager-unmark
-       "x" #'gptel-context-manager-execute
-       "D" #'gptel-context-manager-delete
-       "gr" #'revert-buffer
-       (kbd "RET") #'gptel-context-manager-visit
-       "s" #'gptel-context-manager-switch-buffer
-       "b" #'gptel-context-manager-switch-buffer
-       "K" #'gptel-context-manager-move-up
-       "J" #'gptel-context-manager-move-down
-       "q" #'gptel-context-manager-quit
-       "?" #'gptel-context-manager-quick-help)
-     ;; Ensure we start in normal state, not emacs state
-     (evil-set-initial-state 'gptel-context-manager-mode 'normal)))
+(defun gptel-context-manager--setup-evil ()
+  "Setup evil keybindings for gptel-context-manager-mode."
+  (when (bound-and-true-p evil-mode)
+    (evil-set-initial-state 'gptel-context-manager-mode 'normal)
+    (evil-define-key 'normal gptel-context-manager-mode-map
+      "d" #'gptel-context-manager-mark-delete
+      "u" #'gptel-context-manager-unmark
+      "x" #'gptel-context-manager-execute
+      "D" #'gptel-context-manager-delete
+      "gr" #'revert-buffer
+      (kbd "RET") #'gptel-context-manager-visit
+      "s" #'gptel-context-manager-switch-buffer
+      "b" #'gptel-context-manager-switch-buffer
+      "K" #'gptel-context-manager-move-up
+      "J" #'gptel-context-manager-move-down
+      "q" #'gptel-context-manager-quit
+      "?" #'gptel-context-manager-quick-help
+      "a" #'gptel-context-manager-add-file
+      "r" #'gptel-context-manager-add-region
+      "B" #'gptel-context-manager-add-buffer)))
+
+(with-eval-after-load 'evil
+  (gptel-context-manager--setup-evil))
 
 ;;;###autoload
 (defun gptel-context-manager (&optional buffer)
@@ -300,6 +313,37 @@ Negative DELTA moves up, positive moves down."
                 (goto-char (point-min))
                 (let ((target-line (1+ new-pos))) ; +1 for header
                   (forward-line target-line))))))))))
+
+(defun gptel-context-manager-add-file (file)
+  "Add FILE to the target buffer's context."
+  (interactive "fAdd file to context: ")
+  (unless (buffer-live-p gptel-context-manager--target-buffer)
+    (user-error "Target buffer no longer exists"))
+  (gptel-context-add-file file gptel-context-manager--target-buffer)
+  (revert-buffer))
+
+(defun gptel-context-manager-add-buffer (buffer)
+  "Add BUFFER to the target buffer's context."
+  (interactive "bAdd buffer to context: ")
+  (unless (buffer-live-p gptel-context-manager--target-buffer)
+    (user-error "Target buffer no longer exists"))
+  (let ((buf (get-buffer buffer)))
+    (unless buf
+      (user-error "Buffer does not exist: %s" buffer))
+    (with-current-buffer buf
+      (gptel-context--add-region buf (point-min) (point-max) t
+                                 gptel-context-manager--target-buffer)))
+  (revert-buffer))
+
+(defun gptel-context-manager-add-region ()
+  "Switch to a buffer to select a region to add to context."
+  (interactive)
+  (unless (buffer-live-p gptel-context-manager--target-buffer)
+    (user-error "Target buffer no longer exists"))
+  (let ((target gptel-context-manager--target-buffer))
+    (message "Switch to a buffer, select a region, then run `gptel-add' to add it to %s's context."
+             (buffer-name target))
+    (message "Use C-u - prefix with gptel-add to specify target explicitly.")))
 
 ;; Live update advice - refresh all active context manager buffers
 (defun gptel-context-manager--auto-refresh (&rest _)

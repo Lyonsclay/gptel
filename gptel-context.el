@@ -108,11 +108,35 @@ context."
 (defvar gptel-context--reset-cache nil
   "Whether a project files cache-buster has been scheduled.")
 
+(defun gptel-context--target-buffer ()
+  "Return the appropriate target buffer for context operations.
+
+If `gptel--set-buffer-locally' is non-nil, return the current buffer.
+Otherwise return nil, indicating global context should be used."
+  (when gptel--set-buffer-locally
+    (current-buffer)))
+
+(defun gptel-context--get (target)
+  "Get the context list for TARGET buffer, or global if TARGET is nil."
+  (if (and target (buffer-live-p target))
+      (buffer-local-value 'gptel-context target)
+    gptel-context))
+
+(defun gptel-context--set (target value)
+  "Set the context list to VALUE for TARGET buffer, or globally if TARGET is nil."
+  (if (and target (buffer-live-p target))
+      (with-current-buffer target
+        (setq-local gptel-context value))
+    (setq gptel-context value)))
+
 ;;; Commands
 
-(defun gptel-context-add-current-kill (&optional arg)
-  "Add current kill to gptel, accumulating if ARG is non-nil."
-  (interactive "P")
+(defun gptel-context-add-current-kill (&optional arg target)
+  "Add current kill to gptel's context, accumulating if ARG is non-nil.
+
+TARGET is the buffer to add context to.  If nil, uses the current
+scope setting to determine the target."
+  (interactive (list current-prefix-arg (gptel-context--target-buffer)))
   (let ((kill (current-kill 0)))
     (with-current-buffer (get-buffer-create " *gptel-kill-ring-context*")
       (if (not arg)
@@ -121,12 +145,12 @@ context."
         (unless (bobp)
           (insert "\n----\n")))
       (insert kill)
-      (gptel-context--add-region (current-buffer)
-                                 (point-min) (point-max))
+      (gptel-context--add-region (current-buffer) (point-min) (point-max)
+                                 nil target)
       (message "*current-kill* has been added as context."))))
 
-(defun gptel-context-add (&optional arg confirm)
-  "Add context to gptel in a DWIM fashion.
+(defun gptel-context-add (&optional arg confirm target)
+  "Add context to gptel's context in a DWIM fashion.
 
 - If a region is selected, add the selected region to the
   context.  If there is already a gptel context at point, remove it
@@ -147,13 +171,17 @@ context."
 - With negative prefix ARG, remove all gptel contexts from the current
   buffer, prompting the user for confirmation if called interactively
   or CONFIRM is non-nil."
-  (interactive "P\np")
+  (interactive (list current-prefix-arg
+                     (called-interactively-p 'any)
+                     (gptel-context--target-buffer)))
+  (setq target (or target (gptel-context--target-buffer)))
   (cond
    ;; A region is selected.
    ((use-region-p)
     (gptel-context--add-region (current-buffer)
                                (region-beginning)
-                               (region-end))
+                               (region-end)
+                               nil target)
     (deactivate-mark)
     (message "Current region added as context."))
    ;; If in dired
@@ -162,8 +190,8 @@ context."
            (dirs (cl-remove-if-not #'file-directory-p files))
            (remove-p (< (prefix-numeric-value arg) 0))
 	   (action-fn (if remove-p
-			  #'gptel-context-remove
-			#'gptel-context-add-file)))
+			  (lambda (f) (gptel-context-remove f target))
+			(lambda (f) (gptel-context-add-file f target)))))
       (when (or remove-p (null dirs) (null confirm)
 		(y-or-n-p (format "Recursively add files from %d director%s? "
 				  (length dirs)
@@ -174,9 +202,9 @@ context."
     (let* ((buffers (or (ibuffer-get-marked-buffers)
                         (list (ibuffer-current-buffer))))
            (remove-p (< (prefix-numeric-value arg) 0))
-	   (action-fn (if remove-p
-			  #'gptel-context-remove
-			#'gptel-context--add-buffer)))
+           (action-fn (if remove-p
+                          (lambda (b) (gptel-context-remove b target))
+                        (lambda (b) (gptel-context--add-buffer b target)))))
       (mapc action-fn buffers)))
    ;; If in an image buffer
    ((and (derived-mode-p 'image-mode)
@@ -184,8 +212,8 @@ context."
 	 (buffer-file-name)
 	 (not (gptel-context--skip-p (buffer-file-name))))
     (funcall (if (and arg (< (prefix-numeric-value arg) 0))
-                 #'gptel-context-remove
-               #'gptel-context-add-file)
+                 (lambda (f) (gptel-context-remove f target))
+               (lambda (f) (gptel-context-add-file f target)))
              (buffer-file-name)))
    ;; No region is selected, and ARG is positive.
    ((and arg (> (prefix-numeric-value arg) 0))
@@ -194,7 +222,7 @@ context."
            (start (with-current-buffer buffer-name (point-min)))
            (end (with-current-buffer buffer-name (point-max))))
       (gptel-context--add-region
-       (get-buffer buffer-name) start end t)
+       (get-buffer buffer-name) start end t target)
       (message "Buffer '%s' added as context." buffer-name)))
    ;; No region is selected, and ARG is negative.
    ((and arg (< (prefix-numeric-value arg) 0))
@@ -212,44 +240,56 @@ context."
    (t ; Default behavior
     (if (gptel-context--at-point)
         (progn
-          (gptel-context-remove
-           (car (gptel-context--in-region (current-buffer)
-                                          (max (point-min) (1- (point)))
-                                          (point))))
+          (gptel-context-remove (car (gptel-context--in-region
+                                      (current-buffer)
+                                      (max (point-min) (1- (point)))
+                                      (point)))
+                                target)
           (message "Context under point has been removed."))
-      (gptel-context--add-buffer (current-buffer))))))
+      (gptel-context--add-buffer (current-buffer) target)))))
 
 ;;;###autoload (autoload 'gptel-add "gptel-context" "Add/remove regions or buffers from gptel's context." t)
 (defalias 'gptel-add #'gptel-context-add)
 
-(defun gptel-context--add-buffer (buffer)
-  "Add BUFFER to context."
+(defun gptel-context--add-buffer (buffer &optional target)
+  "Add BUFFER to context.
+
+TARGET is the buffer whose context to modify.  If nil, uses global context."
   (with-current-buffer buffer
-    (gptel-context--add-region (current-buffer) (point-min) (point-max) t))
+    (gptel-context--add-region (current-buffer) (point-min) (point-max) t target))
   (message "Buffer \"%s\" added to context." (buffer-name buffer)))
 
-(defun gptel-context--add-text-file (path)
-  "Add text file at PATH to context."
-  (cl-pushnew (list path) gptel-context :test #'equal)
+(defun gptel-context--add-text-file (path &optional target)
+  "Add text file at PATH to context.
+
+TARGET is the buffer whose context to modify.  If nil, uses global context."
+  (let ((ctx (gptel-context--get target)))
+    (cl-pushnew (list path) ctx :test #'equal)
+    (gptel-context--set target ctx))
   (message "File \"%s\" added to context." path)
   path)
 
-(defun gptel-context--add-binary-file (path)
+(defun gptel-context--add-binary-file (path &optional target)
   "Add binary file at PATH to context if supported.
-Return PATH if added, nil if ignored."
+Return PATH if added, nil if ignored.
+
+TARGET is the buffer whose context to modify.  If nil, uses global context."
   (if-let* (((gptel--model-capable-p 'media))
             (mime (mailcap-file-name-to-mime-type path))
             ((gptel--model-mime-capable-p mime)))
       (prog1 path
-        (cl-pushnew (list path :mime mime)
-                    gptel-context :test #'equal)
+        (let ((ctx (gptel-context--get target)))
+          (cl-pushnew (list path :mime mime) ctx :test #'equal)
+          (gptel-context--set target ctx))
         (message "File \"%s\" added to context." path))
     (message "Ignoring unsupported binary file \"%s\"." path)
     nil))
 
-(defun gptel-context--add-directory (path action)
+(defun gptel-context--add-directory (path action &optional target)
   "Process all files in directory at PATH according to ACTION.
-ACTION should be either `add' or `remove'."
+ACTION should be either `add' or `remove'.
+
+TARGET is the buffer whose context to modify.  If nil, uses global context."
   (dolist (file (directory-files-recursively path "."))
     (pcase-exhaustive action
       ('add
@@ -263,21 +303,26 @@ ACTION should be either `add' or `remove'."
            ;; Don't message about .git, as this creates thousands of messages
            (unless (string-match-p "\\.git/" file)
              (gptel-context--message-skipped file))
-         (gptel-context-add-file file)))
+         (gptel-context-add-file file target)))
       ('remove
-       (setf (alist-get file gptel-context nil 'remove #'equal) nil)))))
+       (let ((ctx (gptel-context--get target)))
+         (setf (alist-get file ctx nil 'remove #'equal) nil)
+         (gptel-context--set target ctx))))))
 
-(defun gptel-context-add-file (path)
+(defun gptel-context-add-file (path &optional target)
   "Add the file at PATH to the gptel context.
 
-If PATH is a directory, recursively add all files in it.  PATH should be
-readable as text."
-  (interactive "fChoose file to add to context: ")
+If PATH is a directory, recursively add all files in it.
+
+TARGET is the buffer whose context to modify.  If nil, uses the current
+scope setting to determine the target."
+  (interactive (list (read-file-name "Choose file to add to context: ")
+                     (gptel-context--target-buffer)))
   (cond ((file-directory-p path)
-         (gptel-context--add-directory path 'add))
+         (gptel-context--add-directory path 'add target))
 	((gptel--file-binary-p path)
-         (gptel-context--add-binary-file path))
-	(t (gptel-context--add-text-file path))))
+         (gptel-context--add-binary-file path target))
+	(t (gptel-context--add-text-file path target))))
 
 ;;;###autoload (autoload 'gptel-add-file "gptel-context" "Add files to gptel's context." t)
 (defalias 'gptel-add-file #'gptel-context-add-file)
@@ -312,33 +357,41 @@ readable as text."
       (message "Skipping %s \"%s\". %s" type file reminder))))
 
 ;;; Remove context
-(defun gptel-context-remove (&optional context)
+(defun gptel-context-remove (&optional context target)
   "Remove the CONTEXT overlay from the contexts list.
 
 If CONTEXT is nil, removes the context at point.
 If selection is active, removes all contexts within selection.
-If CONTEXT is a directory, recursively removes all files in it."
+If CONTEXT is a directory, recursively removes all files in it.
+
+TARGET is the buffer whose context to modify.  If nil, uses global context."
   (cond
    ((overlayp context)                  ;Overlay in buffer
     (when-let* ((buf (overlay-buffer context)))
       (delete-overlay context)
       ;; FIXME: Quadratic cost when clearing a bunch of contexts at once
-      (unless
-          (cl-loop
-           for ov in
-           (plist-get (alist-get buf gptel-context) :overlays)
-           thereis (overlay-start ov))
-        (setf (alist-get buf gptel-context nil 'remove) nil))))
+      (let ((ctx (gptel-context--get target)))
+        (unless
+            (cl-loop
+             for ov in
+             (plist-get (alist-get buf ctx) :overlays)
+             thereis (overlay-start ov))
+          (setf (alist-get buf ctx nil 'remove) nil)
+          (gptel-context--set target ctx)))))
    ((bufferp context)                   ;Full buffer
-    (setf (alist-get context gptel-context nil 'remove) nil)
+    (let ((ctx (gptel-context--get target)))
+      (setf (alist-get context ctx nil 'remove) nil)
+      (gptel-context--set target ctx))
     (when (buffer-live-p context)
       (with-current-buffer context
         (without-restriction
           (remove-overlays nil nil 'gptel-context t)))))
    ((stringp context)                   ;file or directory
     (if (file-directory-p context)
-        (gptel-context--add-directory context 'remove)
-      (setf (alist-get context gptel-context nil 'remove #'equal) nil)
+        (gptel-context--add-directory context 'remove target)
+      (let ((ctx (gptel-context--get target)))
+        (setf (alist-get context ctx nil 'remove #'equal) nil)
+        (gptel-context--set target ctx))
       (message "File \"%s\" removed from context." context)))
    ((region-active-p)                   ;Overlays in region
     (when-let* ((contexts (gptel-context--in-region (current-buffer)
@@ -367,19 +420,24 @@ afterwards."
        finally do (setq gptel-context nil))
       (when verbose (message "Removed all gptel context sources.")))))
 
-;;; Context wrap
-(defun gptel-context--make-overlay (start end &optional advance)
-  "Highlight the region from START to END.
+;;;###autoload
+(defun gptel-context--make-overlay (start end &optional advance target)
+   "Highlight the region from START to END.
 
-ADVANCE controls the overlay boundary behavior."
+ADVANCE controls the overlay boundary behavior.
+TARGET is the buffer whose context to modify.  If nil, uses global context."
   (let ((overlay (make-overlay start end nil (not advance) advance))
-        (buf-entry (alist-get (current-buffer) gptel-context)))
+        (ctx (gptel-context--get target))
+        buf-entry)
+    (setq buf-entry (alist-get (current-buffer) ctx))
     (overlay-put overlay 'evaporate t)
     (overlay-put overlay 'face 'gptel-context-highlight-face)
     (overlay-put overlay 'gptel-context t)
-    (setf (alist-get (current-buffer) gptel-context)
-          (plist-put buf-entry :overlays
-                     (cons overlay (plist-get buf-entry :overlays))))
+    (setq ctx (cons (cons (current-buffer)
+                          (plist-put buf-entry :overlays
+                                     (cons overlay (plist-get buf-entry :overlays))))
+                    (assq-delete-all (current-buffer) ctx)))
+    (gptel-context--set target ctx)
     overlay))
 
 ;;;###autoload
@@ -449,12 +507,14 @@ base64-encoded and prepended to the first user prompt."
   "Add region delimited by REGION-BEGINNING, REGION-END in BUFFER as context.
 
 If ADVANCE is non-nil, the context overlay envelopes changes at
-the beginning and end."
+the beginning and end.
+TARGET is the buffer whose context to modify.  If nil, uses global context."
+
   ;; Remove existing contexts in the same region, if any.
   (mapc #'gptel-context-remove
         (gptel-context--in-region buffer region-beginning region-end))
   (prog1 (with-current-buffer buffer
-           (gptel-context--make-overlay region-beginning region-end advance))
+           (gptel-context--make-overlay region-beginning region-end advance target))
     (message "Region added to context buffer.")))
 
 (defun gptel-context--in-region (buffer start end)
