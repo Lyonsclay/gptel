@@ -1368,8 +1368,7 @@ supports.  See `gptel-track-media' for more information."
   "Yank to context"
   (interactive "P")
   (require 'gptel-context)
-  (gptel-context-add-current-kill arg (when gptel--set-buffer-locally
-                                        transient--original-buffer))
+  (gptel-context-add-current-kill arg transient--original-buffer)
   (transient-setup))
 
 (transient-define-suffix gptel--infix-context-add-region ()
@@ -1386,8 +1385,7 @@ supports.  See `gptel-track-media' for more information."
         "Remove context at point"
       "Add region to context"))
   (interactive)
-  (gptel-add nil nil (when gptel--set-buffer-locally
-                       transient--original-buffer))
+  (gptel-add nil nil transient--original-buffer)
   (transient-setup))
 
 (transient-define-suffix gptel--infix-context-add-buffer ()
@@ -1396,8 +1394,7 @@ supports.  See `gptel-track-media' for more information."
   :key "-b"
   :description "Add a buffer to context"
   (interactive)
-  (gptel-add '(4) nil (when gptel--set-buffer-locally
-                        transient--original-buffer))
+  (gptel-add '(4) nil transient--original-buffer)
   (transient-setup))
 
 (declare-function gptel-add-file "gptel-context")
@@ -1410,8 +1407,8 @@ supports.  See `gptel-track-media' for more information."
   :description "Add a file to context"
   (interactive)
   (let ((file (read-file-name "Choose file to add to context: ")))
-    (gptel-add-file file (when gptel--set-buffer-locally
-                           transient--original-buffer)))
+    (gptel-add-file file transient--original-buffer))
+
   (transient-setup))
 
 (transient-define-suffix gptel--infix-context-remove-all ()

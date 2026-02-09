@@ -112,19 +112,6 @@
   "Face for empty context message in context manager."
   :group 'gptel-context-manager)
 
-(define-derived-mode gptel-context-manager-mode tabulated-list-mode "GPTel Context"
-  "Major mode for managing gptel context.
-
-\\{gptel-context-manager-mode-map}"
-  :interactive nil
-  (setq tabulated-list-format [("M" 2 t)
-                               ("Context Item" 0 t)])
-  (setq tabulated-list-padding 1)
-  (setq tabulated-list-sort-key nil)
-  (add-hook 'tabulated-list-revert-hook #'gptel-context-manager--refresh nil t)
-  (tabulated-list-init-header)
-  (gptel-context-manager--update-header-line))
-
 (defvar gptel-context-manager-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "d") #'gptel-context-manager-mark-delete)
@@ -144,9 +131,22 @@
     (define-key map (kbd "r") #'gptel-context-manager-add-region)
     (define-key map (kbd "U") #'gptel-context-manager-unmark-all)
     (define-key map (kbd "t") #'gptel-context-manager-toggle-mark)
-    (define-key map (kbd "% m") #'gptel-context-manager-mark-regexp)
+    (define-key map (kbd "%") #'gptel-context-manager-mark-regexp)
     map)
-  "Keymap for `gptel-context-manager-mode'.")
+  "Keymap for =gptel-context-manager-mode'.")
+
+(define-derived-mode gptel-context-manager-mode tabulated-list-mode "GPTel Context"
+  "Major mode for managing gptel context.
+
+\\{gptel-context-manager-mode-map}"
+  :interactive nil
+  (setq tabulated-list-format [("M" 2 t)
+                               ("Context Item" 0 t)])
+  (setq tabulated-list-padding 1)
+  (setq tabulated-list-sort-key nil)
+  (add-hook 'tabulated-list-revert-hook #'gptel-context-manager--refresh nil t)
+  (tabulated-list-init-header)
+  (gptel-context-manager--update-header-line))
 
 ;; Evil integration: use normal state and bind keys for this mode.
 ;; We use =eval-after-load' with a quoted lambda to avoid byte-compilation
@@ -173,7 +173,7 @@
       "B" #'gptel-context-manager-add-buffer
       "U" #'gptel-context-manager-unmark-all
       "t" #'gptel-context-manager-toggle-mark
-      "% m" #'gptel-context-manager-mark-regexp)))
+      "%" #'gptel-context-manager-mark-regexp)))
 
 (with-eval-after-load 'evil
   (gptel-context-manager--setup-evil))
@@ -417,7 +417,7 @@ Negative DELTA moves up, positive moves down."
 
 (defun gptel-context-manager-add-buffer (buffer)
   "Add BUFFER to the target buffer's context."
-  (interactive "Add buffer to context: ")
+  (interactive "bAdd buffer to context: ")
   (let ((target gptel-context-manager--target-buffer))
     (unless (buffer-live-p target)
       (user-error "Target buffer no longer exists"))
@@ -433,9 +433,24 @@ Negative DELTA moves up, positive moves down."
   (unless (buffer-live-p gptel-context-manager--target-buffer)
     (user-error "Target buffer no longer exists"))
   (let ((target gptel-context-manager--target-buffer))
-    (message "Switch to a buffer, select a region, then run `gptel-add' to add it to %s's context."
-             (buffer-name target))
-    (message "Use C-u - prefix with gptel-add to specify target explicitly.")))
+    (let ((buf (read-buffer "Buffer to select region from: " nil t)))
+      (unless buf (user-error "No buffer selected"))
+      (let ((source (get-buffer buf)))
+        (unless source (user-error "Buffer does not exist: %s" buf))
+        (switch-to-buffer source)
+        (message
+         (substitute-command-keys
+          (format
+           "Select a region in =%s', then \\[gptel-context-add] to add it to =%s' context."
+           (buffer-name source)
+           (buffer-name target)))))))
+  ;; Set up a one-shot hook so the next gptel-context-add targets the right buffer
+  (let ((target gptel-context-manager--target-buffer))
+    (letrec ((hook (lambda ()
+                     (remove-hook 'gptel-context-modified-hook hook)
+                     (when (buffer-live-p target)
+                       (gptel-context-manager--auto-refresh)))))
+      (add-hook 'gptel-context-modified-hook hook))))
 
 ;; Live update advice - refresh all active context manager buffers
 (defun gptel-context-manager--auto-refresh (&rest _)
