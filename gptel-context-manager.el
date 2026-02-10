@@ -44,6 +44,7 @@
 ;;   a       - Add file to context
 ;;   B       - Add buffer to context
 ;;   r       - Add region (instructions)
+;;   c       - Toggle context scope (global/local) for target buffer
 ;;   q       - Quit
 ;;   ?       - Quick help
 
@@ -51,6 +52,7 @@
 
 (require 'gptel)
 (require 'gptel-context)
+(require 'seq)
 (require 'tabulated-list)
 (require 'cl-lib)
 
@@ -62,6 +64,9 @@
 
 (defvar-local gptel-context-manager--target-buffer nil
   "The buffer whose context is currently being managed.")
+
+(declare-function gptel-context--local-p "gptel-context" (&optional buffer))
+(declare-function gptel-context-toggle-locality "gptel-context" (&optional buffer))
 
 (defgroup gptel-context-manager nil
   "Manager for gptel context."
@@ -129,6 +134,10 @@
     (define-key map (kbd "a") #'gptel-context-manager-add-file)
     (define-key map (kbd "B") #'gptel-context-manager-add-buffer)
     (define-key map (kbd "r") #'gptel-context-manager-add-region)
+    (define-key map (kbd "c") #'gptel-context-manager-toggle-scope)
+    ;; Non-conflicting alternatives (especially useful under Evil).
+    (define-key map (kbd "C-c c") #'gptel-context-manager-toggle-scope)
+    (define-key map (kbd "C-c g") #'revert-buffer)
     (define-key map (kbd "U") #'gptel-context-manager-unmark-all)
     (define-key map (kbd "t") #'gptel-context-manager-toggle-mark)
     (define-key map (kbd "%") #'gptel-context-manager-mark-regexp)
@@ -147,6 +156,9 @@
   (add-hook 'tabulated-list-revert-hook #'gptel-context-manager--refresh nil t)
   (tabulated-list-init-header)
   (gptel-context-manager--update-header-line))
+
+(add-hook 'gptel-context-manager-mode-hook
+          #'gptel-context-manager--setup-evil)
 
 ;; Evil integration: use normal state and bind keys for this mode.
 ;; We use =eval-after-load' with a quoted lambda to avoid byte-compilation
@@ -175,9 +187,6 @@
       "t" #'gptel-context-manager-toggle-mark
       "%" #'gptel-context-manager-mark-regexp)))
 
-(with-eval-after-load 'evil
-  (gptel-context-manager--setup-evil))
-
 ;;;###autoload
 (defun gptel-context-manager (&optional buffer)
   "Manage gptel context for BUFFER.
@@ -204,9 +213,7 @@ interface for viewing, deleting, and reordering context items."
              (propertize (buffer-name gptel-context-manager--target-buffer)
                          'face 'gptel-context-manager-target-buffer-face)
              (propertize
-              (if (local-variable-p 'gptel-context gptel-context-manager--target-buffer)
-                  " (local context)"
-                " (global context)")
+              (if (gptel-context--local-p gptel-context-manager--target-buffer) " (local context)" " (global context)")
               'face 'gptel-context-manager-details-face)
              (propertize
               (format "  |  %d item(s)"
@@ -246,7 +253,22 @@ _INDEX is the position in the context list (unused)."
 (defun gptel-context-manager-quick-help ()
   "Show quick help for context manager."
   (interactive)
-  (message "d:mark  u:unmark  U:unmark-all  t:toggle  %%m:mark-re  x:exec  D:del  M-p/M-n:move  RET:visit  s:switch  a:+file  B:+buf  r:+region  g:refresh  q:quit"))
+  (message "d:mark  u:unmark  U:unmark-all  t:toggle  %%m:mark-re  x:exec  D:del  M-p/M-n:move  RET:visit  s:switch  a:+file  B:+buf  r:+region  c:scope  g:refresh  q:quit"))
+
+(defun gptel-context-manager-toggle-scope ()
+  "Toggle whether the target buffer's `gptel-context' is global or buffer-local."
+  (interactive)
+  (unless (buffer-live-p gptel-context-manager--target-buffer)
+    (user-error "Target buffer no longer exists"))
+  (let ((target gptel-context-manager--target-buffer)
+        before after)
+    (setq before (gptel-context--local-p target))
+    (gptel-context-toggle-locality target)
+    (setq after (gptel-context--local-p target))
+    (revert-buffer)
+    (message "Context for %s is now %s"
+             (buffer-name target)
+             (if after "local" "global"))))
 
 (defun gptel-context-manager-switch-buffer (buffer)
   "Switch the context manager to view BUFFER."
@@ -311,8 +333,7 @@ _INDEX is the position in the context list (unused)."
       (revert-buffer))))
 
 (defun gptel-context-manager-execute ()
-  "Delete marked entries
-."
+  "Delete marked entries."
   (interactive)
   (let ((items nil))
     (save-excursion
@@ -332,15 +353,19 @@ _INDEX is the position in the context list (unused)."
 (defun gptel-context-manager--remove-items (items)
   "Remove ITEMS from the target buffer's context."
   (when (buffer-live-p gptel-context-manager--target-buffer)
+    ;; Clean up overlays in the items being removed
     (dolist (item items)
-      ;; Clean up overlays in the item
       (let ((props (cdr-safe item)))
         (when props
           (dolist (ov (plist-get props :overlays))
-            (when (overlayp ov) (delete-overlay ov)))))
-      ;; Remove from list
-      (with-current-buffer gptel-context-manager--target-buffer
-        (setq gptel-context (delete item gptel-context))))))
+            (when (overlayp ov)
+              (delete-overlay ov))))))
+    ;; Update context via the official setter to ensure hooks fire and any
+    ;; scope/locality behavior is preserved consistently.
+    (let* ((target gptel-context-manager--target-buffer)
+           (old (buffer-local-value 'gptel-context target))
+           (new (cl-set-difference old items :test #'equal)))
+      (gptel-context--set new target))))
 
 (defun gptel-context-manager-visit ()
   "Visit the source of the context item at point."
@@ -395,12 +420,14 @@ Negative DELTA moves up, positive moves down."
               (if (or (< new-pos 0) (>= new-pos len))
                   (message "Cannot move further in that direction")
                 ;; Perform the swap
-                (with-current-buffer gptel-context-manager--target-buffer
-                  (let ((item-at-pos (nth pos gptel-context))
-                        (item-at-new-pos (nth new-pos gptel-context)))
-                    (setf (nth pos gptel-context) item-at-new-pos)
-                    (setf (nth new-pos gptel-context) item-at-pos)))
-                ;; Refresh and restore cursor position
+                (let* ((target gptel-context-manager--target-buffer)
+                       (ctx-copy (copy-sequence
+                                  (buffer-local-value 'gptel-context target)))
+                       (item-at-pos (nth pos ctx-copy))
+                       (item-at-new-pos (nth new-pos ctx-copy)))
+                  (setf (nth pos ctx-copy) item-at-new-pos)
+                  (setf (nth new-pos ctx-copy) item-at-pos)
+                  (gptel-context--set ctx-copy target))                ;; Refresh and restore cursor position
                 (revert-buffer)
                 ;; Move cursor to the new position of the item
                 (goto-char (point-min))
@@ -424,7 +451,13 @@ Negative DELTA moves up, positive moves down."
     (let ((buf (get-buffer buffer)))
       (unless buf
         (user-error "Buffer does not exist: %s" buffer))
-      (gptel-context--add-buffer buf target))
+      ;; Use the public API so scope/locality and hooks behave consistently.
+      (gptel-context-add nil nil target)
+      ;; The above DWIM call will add/remove from the *current* buffer unless we
+      ;; ensure BUF is current.  Temporarily switch while preserving TARGET.
+      (with-current-buffer buf
+        (gptel-context-add nil nil target)))
+
     (revert-buffer)))
 
 (defun gptel-context-manager-add-region ()
@@ -452,8 +485,8 @@ Negative DELTA moves up, positive moves down."
                        (gptel-context-manager--auto-refresh)))))
       (add-hook 'gptel-context-modified-hook hook))))
 
-;; Live update advice - refresh all active context manager buffers
-(defun gptel-context-manager--auto-refresh (&rest _)
+;; Live update hook - refresh all active context manager buffers
+(defun gptel-context-manager--auto-refresh (&optional _changed-buffer)
   "Refresh all active context manager buffers."
   (dolist (buf (buffer-list))
     (when (buffer-live-p buf)
@@ -462,11 +495,8 @@ Negative DELTA moves up, positive moves down."
           (gptel-context-manager--refresh)
           (tabulated-list-print t t))))))
 
-;; Add advice to gptel-context functions for live updates
-(advice-add 'gptel-context-add :after #'gptel-context-manager--auto-refresh)
-(advice-add 'gptel-context-remove :after #'gptel-context-manager--auto-refresh)
-(advice-add 'gptel-context-remove-all :after #'gptel-context-manager--auto-refresh)
-(advice-add 'gptel-add-file :after #'gptel-context-manager--auto-refresh)
+;; Use the official hook exposed by gptel-context.
+(add-hook 'gptel-context-modified-hook #'gptel-context-manager--auto-refresh)
 
 (provide 'gptel-context-manager)
 ;;; gptel-context-manager.el ends here

@@ -93,6 +93,12 @@ context chunk.  This is accessible as, for example:
   :group 'gptel
   :type 'function)
 
+(defun gptel-context--local-p (&optional buffer)
+  "Return non-nil if `gptel-context' is buffer-local in BUFFER.
+
+BUFFER defaults to the current buffer."
+  (local-variable-p 'gptel-context (or buffer (current-buffer))))
+
 (defcustom gptel-context-restrict-to-project-files t
   "Restrict files eligible to be added to the context to project files.
 
@@ -123,6 +129,57 @@ BUFFER defaults to the current buffer.  Runs
   (with-current-buffer (or buffer (current-buffer))
     (setq gptel-context new-value)
     (run-hook-with-args 'gptel-context-modified-hook (current-buffer))))
+
+(defun gptel-context-make-local (&optional buffer initial)
+  "Make `gptel-context' buffer-local in BUFFER.
+
+BUFFER defaults to the current buffer.
+
+INITIAL controls the initial local value:
+- nil (default): initialize local value from the current effective value
+  (usually the global value).
+- `empty': initialize local value to nil.
+- any other value: use that value as the initial local context list.
+
+Runs `gptel-context-modified-hook' for BUFFER."
+  (with-current-buffer (or buffer (current-buffer))
+    (unless (local-variable-p 'gptel-context (current-buffer))
+      (setq-local gptel-context
+                  (pcase initial
+                    ('empty nil)
+                    ((pred null) gptel-context)
+                    (_ initial))))
+    (run-hook-with-args 'gptel-context-modified-hook (current-buffer))
+    gptel-context))
+
+(defun gptel-context-make-global (&optional buffer)
+  "Make `gptel-context' use the global value in BUFFER.
+
+This kills any buffer-local binding of `gptel-context' in BUFFER and
+does not otherwise alter the global value.
+
+Runs `gptel-context-modified-hook' for BUFFER."
+  (with-current-buffer (or buffer (current-buffer))
+    (when (local-variable-p 'gptel-context (current-buffer))
+      ;; Kill the local binding; any overlays in source buffers remain, but
+
+;; they're no longer referenced by this buffer's context alist.
+      (kill-local-variable 'gptel-context))
+    (run-hook-with-args 'gptel-context-modified-hook (current-buffer))
+    gptel-context))
+
+(defun gptel-context-toggle-locality (&optional buffer)
+  "Toggle whether `gptel-context' is buffer-local in BUFFER.
+
+BUFFER defaults to the current buffer.
+
+When toggling from global to local, the initial local value is copied
+from the current effective value."
+  (interactive)
+  (let ((buf (or buffer (current-buffer))))
+    (if (gptel-context--local-p buf)
+        (gptel-context-make-global buf)
+      (gptel-context-make-local buf))))
 
 ;;; Commands
 
@@ -273,6 +330,7 @@ Return PATH if added, nil if ignored."
         (cl-pushnew (list path :mime mime)
                     gptel-context :test #'equal)
         (run-hook-with-args 'gptel-context-modified-hook (current-buffer))
+
         (message "File \"%s\" added to context." path))
     (message "Ignoring unsupported binary file \"%s\"." path)
     nil))
