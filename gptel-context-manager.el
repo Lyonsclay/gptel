@@ -150,6 +150,7 @@
 \\{gptel-context-manager-mode-map}"
   :interactive nil
   (setq tabulated-list-format [("M" 2 t)
+                               ("Type" 8 t)
                                ("Context Item" 0 t)])
   (setq tabulated-list-padding 1)
   (setq tabulated-list-sort-key nil)
@@ -240,9 +241,36 @@ interface for viewing, deleting, and reordering context items."
 _INDEX is the position in the context list (unused)."
   (let* ((source (if (consp item) (car item) item))
          (is-buffer (bufferp source))
-         (name (if is-buffer (buffer-name source) (abbreviate-file-name source)))
+         (spec (cdr-safe item))
+         (has-overlays (and (listp spec) (plist-get spec :overlays)))
+         (has-lines (and (listp spec) (plist-get spec :lines)))
+         (has-bounds (and (listp spec) (plist-get spec :bounds)))
+         (type
+          (cond
+           ((and is-buffer (or has-overlays has-lines has-bounds)) "region")
+           (is-buffer "buffer")
+           ((stringp source) "file")
+           (t "unknown")))
+         (name (cond
+                (is-buffer (buffer-name source))
+                ((stringp source) (abbreviate-file-name source))
+                (t (format "%S" source))))
+         (details
+          (cond
+           ((and (stringp source) (listp spec) (plist-get spec :mime))
+            (format "mime=%s" (plist-get spec :mime)))
+           ((and is-buffer (listp spec) has-overlays)
+            (format "%d overlay(s)" (length (plist-get spec :overlays))))
+           ((and is-buffer (listp spec) has-lines)
+            "lines")
+           ((and is-buffer (listp spec) has-bounds)
+            "bounds")
+           (t nil)))
          (entry (vector ""
-                        (propertize name 'face 'gptel-context-manager-name-face))))
+                        (propertize type 'face 'gptel-context-manager-details-face)
+                        (propertize
+                         (if details (format "%s  (%s)" name details) name)
+                         'face 'gptel-context-manager-name-face))))
     (list item entry)))
 
 (defun gptel-context-manager-quit ()
@@ -479,10 +507,12 @@ Negative DELTA moves up, positive moves down."
            (buffer-name target)))))))
   ;; Set up a one-shot hook so the next gptel-context-add targets the right buffer
   (let ((target gptel-context-manager--target-buffer))
-    (letrec ((hook (lambda ()
-                     (remove-hook 'gptel-context-modified-hook hook)
-                     (when (buffer-live-p target)
-                       (gptel-context-manager--auto-refresh)))))
+    (let ((hook nil))
+      (setq hook
+            (lambda (&optional _changed-buffer)
+              (remove-hook 'gptel-context-modified-hook hook)
+              (when (buffer-live-p target)
+                (gptel-context-manager--auto-refresh))))
       (add-hook 'gptel-context-modified-hook hook))))
 
 ;; Live update hook - refresh all active context manager buffers
