@@ -45,6 +45,9 @@
 ;;   B       - Add buffer to context
 ;;   r       - Add region (instructions)
 ;;   c       - Toggle context scope (global/local) for target buffer
+;;   R       - Add project root
+;;   F       - Feature project root (move to top)
+;;   X       - Remove project root
 ;;   q       - Quit
 ;;   ?       - Quick help
 
@@ -67,6 +70,7 @@
 
 (declare-function gptel-context--local-p "gptel-context" (&optional buffer))
 (declare-function gptel-context-toggle-locality "gptel-context" (&optional buffer))
+(declare-function gptel-org-set-properties "gptel-org" (pt &optional msg))
 
 (defgroup gptel-context-manager nil
   "Manager for gptel context."
@@ -80,6 +84,11 @@
 (defface gptel-context-manager-target-buffer-face
   '((t :inherit font-lock-constant-face :weight bold))
   "Face for the target buffer name in context manager."
+  :group 'gptel-context-manager)
+
+(defface gptel-context-manager-root-face
+  '((t :inherit font-lock-string-face :weight bold))
+  "Face for project roots in context manager."
   :group 'gptel-context-manager)
 
 (defface gptel-context-manager-mark-face
@@ -135,6 +144,9 @@
     (define-key map (kbd "B") #'gptel-context-manager-add-buffer)
     (define-key map (kbd "r") #'gptel-context-manager-add-region)
     (define-key map (kbd "c") #'gptel-context-manager-toggle-scope)
+    (define-key map (kbd "R") #'gptel-context-manager-add-root)
+    (define-key map (kbd "F") #'gptel-context-manager-feature-root)
+    (define-key map (kbd "X") #'gptel-context-manager-remove-root)
     ;; Non-conflicting alternatives (especially useful under Evil).
     (define-key map (kbd "C-c c") #'gptel-context-manager-toggle-scope)
     (define-key map (kbd "C-c g") #'revert-buffer)
@@ -184,6 +196,9 @@
       "a" #'gptel-context-manager-add-file
       "r" #'gptel-context-manager-add-region
       "B" #'gptel-context-manager-add-buffer
+      "R" #'gptel-context-manager-add-root
+      "F" #'gptel-context-manager-feature-root
+      "X" #'gptel-context-manager-remove-root
       "U" #'gptel-context-manager-unmark-all
       "t" #'gptel-context-manager-toggle-mark
       "%" #'gptel-context-manager-mark-regexp)))
@@ -195,11 +210,13 @@
 BUFFER defaults to the current buffer.  Opens a tabulated list
 interface for viewing, deleting, and reordering context items."
   (interactive (list (current-buffer)))
-  (let ((target (or buffer (current-buffer)))
-        (buf (get-buffer-create "*gptel-context-manager*")))
+  (let* ((target (or buffer (current-buffer)))
+         (buf-name (format "*gptel-context-manager: %s*" (buffer-name target)))
+         (buf (get-buffer-create buf-name)))
     (with-current-buffer buf
-      (gptel-context-manager-mode)
-      (setq gptel-context-manager--target-buffer target)
+      (unless (derived-mode-p 'gptel-context-manager-mode)
+        (gptel-context-manager-mode)
+        (setq gptel-context-manager--target-buffer target))
       (gptel-context-manager--refresh)
       (tabulated-list-print)
       (gptel-context-manager--update-header-line))
@@ -214,13 +231,24 @@ interface for viewing, deleting, and reordering context items."
              (propertize (buffer-name gptel-context-manager--target-buffer)
                          'face 'gptel-context-manager-target-buffer-face)
              (propertize
-              (if (gptel-context--local-p gptel-context-manager--target-buffer) " (local context)" " (global context)")
+              (if (gptel-context--local-p gptel-context-manager--target-buffer)
+                  " (local context)" " (global context)")
               'face 'gptel-context-manager-details-face)
              (propertize
               (format "  |  %d item(s)"
                       (length (buffer-local-value 'gptel-context
                                                   gptel-context-manager--target-buffer)))
-              'face 'gptel-context-manager-details-face))
+              'face 'gptel-context-manager-details-face)
+             (let ((roots (buffer-local-value 'gptel-project-roots
+                                              gptel-context-manager--target-buffer)))
+               (if roots
+                   (concat
+                    (propertize "  |  Root: " 'face 'gptel-context-manager-header-face)
+                    (propertize (abbreviate-file-name (car roots))
+                                'face 'gptel-context-manager-root-face)
+                    (when (cdr roots)
+                      (format " (+%d more)" (length (cdr roots)))))
+                 (propertize "  |  (no project root)" 'face 'gptel-context-manager-details-face))))
           (list (propertize " Target buffer no longer exists"
                             'face 'error)))))
 
@@ -281,7 +309,7 @@ _INDEX is the position in the context list (unused)."
 (defun gptel-context-manager-quick-help ()
   "Show quick help for context manager."
   (interactive)
-  (message "d:mark  u:unmark  U:unmark-all  t:toggle  %%m:mark-re  x:exec  D:del  M-p/M-n:move  RET:visit  s:switch  a:+file  B:+buf  r:+region  c:scope  g:refresh  q:quit"))
+  (message "d:mark  u:unmark  U:unmark-all  t:toggle  %%m:mark-re  x:exec  D:del  M-p/M-n:move  RET:visit  s:switch  a:+file  B:+buf  r:+region  c:scope  R:+root  F:feature-root  X:rm-root  g:refresh  q:quit"))
 
 (defun gptel-context-manager-toggle-scope ()
   "Toggle whether the target buffer's `gptel-context' is global or buffer-local."
@@ -299,10 +327,13 @@ _INDEX is the position in the context list (unused)."
              (if after "local" "global"))))
 
 (defun gptel-context-manager-switch-buffer (buffer)
-  "Switch the context manager to view BUFFER."
+  "Switch the context manager to view BUFFER, renaming the manager buffer."
   (interactive "bTarget Buffer: ")
-  (setq gptel-context-manager--target-buffer (get-buffer buffer))
-  (revert-buffer))
+  (let ((target (get-buffer buffer)))
+    (unless target (user-error "Buffer %s does not exist" buffer))
+    (setq gptel-context-manager--target-buffer target)
+    (rename-buffer (format "*gptel-context-manager: %s*" (buffer-name target)) t)
+    (revert-buffer)))
 
 (defun gptel-context-manager-mark-delete ()
   "Mark the entry at point for deletion."
@@ -464,10 +495,16 @@ Negative DELTA moves up, positive moves down."
 
 (defun gptel-context-manager-add-file (file)
   "Add FILE to the target buffer's context."
-  (interactive "fAdd file to context: ")
-  (unless (buffer-live-p gptel-context-manager--target-buffer)
-    (user-error "Target buffer no longer exists"))
-  (gptel-context-add-file file gptel-context-manager--target-buffer)
+  (interactive
+   (list
+    (let ((default-directory (or (and (buffer-live-p gptel-context-manager--target-buffer)
+                                      (with-current-buffer gptel-context-manager--target-buffer
+                                        (car gptel-project-roots)))
+                                 default-directory)))
+      (read-file-name "Add file to context: "))))
+  (let ((target gptel-context-manager--target-buffer))
+    (unless (buffer-live-p target) (user-error "Target buffer no longer exists"))
+    (gptel-context-add-file file target))
   (revert-buffer))
 
 (defun gptel-context-manager-add-buffer (buffer)
@@ -514,6 +551,55 @@ Negative DELTA moves up, positive moves down."
               (when (buffer-live-p target)
                 (gptel-context-manager--auto-refresh))))
       (add-hook 'gptel-context-modified-hook hook))))
+
+(defun gptel-context-manager--sync-org-properties ()
+  "Sync gptel state to Org properties if target is an Org buffer."
+  (when (and (buffer-live-p gptel-context-manager--target-buffer)
+             (with-current-buffer gptel-context-manager--target-buffer
+               (derived-mode-p 'org-mode))
+             (fboundp 'gptel-org-set-properties))
+    (with-current-buffer gptel-context-manager--target-buffer
+      (save-excursion
+        (gptel-org-set-properties (point) nil)))))
+
+(defun gptel-context-manager-add-root (dir)
+  "Add DIR as a project root."
+  (interactive "DProject root directory: ")
+  (unless (buffer-live-p gptel-context-manager--target-buffer)
+    (user-error "Target buffer no longer exists"))
+  (with-current-buffer gptel-context-manager--target-buffer
+    (let ((path (expand-file-name dir)))
+      (unless (member path gptel-project-roots)
+        (setq gptel-project-roots (append gptel-project-roots (list path))))))
+  (gptel-context-manager--sync-org-properties)
+  (revert-buffer))
+
+(defun gptel-context-manager-feature-root ()
+  "Make a project root the featured (primary) root."
+  (interactive)
+  (unless (buffer-live-p gptel-context-manager--target-buffer)
+    (user-error "Target buffer no longer exists"))
+  (with-current-buffer gptel-context-manager--target-buffer
+    (unless gptel-project-roots (user-error "No project roots defined"))
+    (let* ((root (completing-read "Select root to feature: "
+                                  gptel-project-roots nil t))
+           (rest (remove root gptel-project-roots)))
+      (setq gptel-project-roots (cons root rest))))
+  (gptel-context-manager--sync-org-properties)
+  (revert-buffer))
+
+(defun gptel-context-manager-remove-root ()
+  "Remove a project root."
+  (interactive)
+  (unless (buffer-live-p gptel-context-manager--target-buffer)
+    (user-error "Target buffer no longer exists"))
+  (with-current-buffer gptel-context-manager--target-buffer
+    (unless gptel-project-roots (user-error "No project roots defined"))
+    (let* ((root (completing-read "Remove root: "
+                                  gptel-project-roots nil t)))
+      (setq gptel-project-roots (remove root gptel-project-roots))))
+  (gptel-context-manager--sync-org-properties)
+  (revert-buffer))
 
 ;; Live update hook - refresh all active context manager buffers
 (defun gptel-context-manager--auto-refresh (&optional _changed-buffer)

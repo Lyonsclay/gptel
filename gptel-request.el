@@ -145,7 +145,7 @@ command line arguments."
   'gptel-prompt-transform-functions "0.9.9")
 
 (defcustom gptel-prompt-transform-functions
-  '(gptel--transform-apply-preset gptel--transform-add-context)
+  '(gptel--transform-apply-preset gptel-context--inject-roots gptel--transform-add-context)
   "Handlers to augment or transform a query before sending it.
 
 This hook is called in a temporary buffer containing the text to
@@ -953,7 +953,11 @@ For BUF, START, END and BODY-THUNK see `gptel--with-buffer-copy'."
                       gptel-use-context gptel-context gptel--num-messages-to-send
                       gptel-stream gptel-include-reasoning gptel--request-params
                       gptel-temperature gptel-max-tokens gptel-cache))
-        (set (make-local-variable sym) (buffer-local-value sym buf)))
+        (let ((val (buffer-local-value sym buf)))
+          (cond
+           ((eq sym 'gptel-context) (setq val (copy-tree val)))
+           ((eq sym 'gptel-tools) (setq val (copy-sequence val))))
+          (set (make-local-variable sym) val)))
       (when (and start end) (insert-buffer-substring buf start end))
       (setq major-mode (buffer-local-value 'major-mode buf))
       (funcall body-thunk))))

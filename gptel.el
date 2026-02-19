@@ -686,6 +686,9 @@ file."
               (add-file-local-variable 'gptel--num-messages-to-send
                                        gptel--num-messages-to-send)
             (delete-file-local-variable 'gptel--num-messages-to-send))
+          (if gptel-project-roots
+              (add-file-local-variable 'gptel-project-roots gptel-project-roots)
+            (delete-file-local-variable 'gptel-project-roots))
           (add-file-local-variable 'gptel--bounds (gptel--get-buffer-bounds)))))))
 
 

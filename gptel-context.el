@@ -108,6 +108,16 @@ context."
   :group 'gptel
   :type 'boolean)
 
+(defcustom gptel-project-roots nil
+  "List of project root directories for the current context.
+
+The first element is considered the \"featured\" root, used as the default
+directory for relative path resolution and file adding operations.
+
+This variable is automatically buffer-local when set."
+  :group 'gptel
+  :type '(repeat directory))
+
 (defvar gptel-context--project-files nil
   "Cached alist of project files per project.")
 
@@ -130,6 +140,22 @@ BUFFER defaults to the current buffer.  Runs
     (setq gptel-context new-value)
     (run-hook-with-args 'gptel-context-modified-hook (current-buffer))))
 
+(defun gptel-context--project-roots ()
+  "Return the list of project roots, ensuring they are expanded directories."
+  (mapcar #'file-name-as-directory (mapcar #'expand-file-name gptel-project-roots)))
+
+(defun gptel-context--featured-root ()
+  "Return the featured project root (the first one), or nil."
+  (car (gptel-context--project-roots)))
+
+(defun gptel-context--inject-roots (info)
+  "Inject project roots into the system message.
+INFO is the request info plist."
+  (when-let* ((roots (gptel-context--project-roots)))
+    (let ((msg (concat "\nProject Roots:\n"
+                       (mapconcat (lambda (r) (concat "- " r)) roots "\n"))))
+      (gptel--merge-additional-directive msg (plist-get info :system)))))
+
 (defun gptel-context-make-local (&optional buffer initial)
   "Make `gptel-context' buffer-local in BUFFER.
 
@@ -141,6 +167,7 @@ INITIAL controls the initial local value:
 - `empty': initialize local value to nil.
 - any other value: use that value as the initial local context list.
 
+Also makes `gptel-project-roots' buffer-local.
 Runs `gptel-context-modified-hook' for BUFFER."
   (with-current-buffer (or buffer (current-buffer))
     (unless (local-variable-p 'gptel-context (current-buffer))
@@ -149,6 +176,8 @@ Runs `gptel-context-modified-hook' for BUFFER."
                     ('empty nil)
                     ((pred null) gptel-context)
                     (_ initial))))
+    (unless (local-variable-p 'gptel-project-roots (current-buffer))
+      (setq-local gptel-project-roots gptel-project-roots))
     (run-hook-with-args 'gptel-context-modified-hook (current-buffer))
     gptel-context))
 
@@ -157,14 +186,15 @@ Runs `gptel-context-modified-hook' for BUFFER."
 
 This kills any buffer-local binding of `gptel-context' in BUFFER and
 does not otherwise alter the global value.
+It also kills the local binding of `gptel-project-roots'.
 
 Runs `gptel-context-modified-hook' for BUFFER."
   (with-current-buffer (or buffer (current-buffer))
     (when (local-variable-p 'gptel-context (current-buffer))
       ;; Kill the local binding; any overlays in source buffers remain, but
-
-;; they're no longer referenced by this buffer's context alist.
-      (kill-local-variable 'gptel-context))
+      ;; they're no longer referenced by this buffer's context alist.
+      (kill-local-variable 'gptel-context)
+      (kill-local-variable 'gptel-project-roots))
     (run-hook-with-args 'gptel-context-modified-hook (current-buffer))
     gptel-context))
 

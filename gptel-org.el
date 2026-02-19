@@ -523,12 +523,13 @@ ARGS are the original function call arguments."
 (defun gptel-org--entry-properties (&optional pt)
   "Find gptel configuration properties stored at PT."
   (pcase-let
-      ((`(,system ,backend ,model ,temperature ,tokens ,num ,tools)
+      ((`(,system ,backend ,model ,temperature ,tokens ,num ,tools ,roots)
          (mapcar
           (lambda (prop) (org-entry-get (or pt (point)) prop 'selective))
           '("GPTEL_SYSTEM" "GPTEL_BACKEND" "GPTEL_MODEL"
             "GPTEL_TEMPERATURE" "GPTEL_MAX_TOKENS"
-            "GPTEL_NUM_MESSAGES_TO_SEND" "GPTEL_TOOLS"))))
+            "GPTEL_NUM_MESSAGES_TO_SEND" "GPTEL_TOOLS"
+            "GPTEL_PROJECT_ROOTS"))))
     (when system
       (setq system (string-replace "\\n" "\n" system)))
     (when backend
@@ -548,7 +549,13 @@ ARGS are the original function call arguments."
                    (display-warning
                     '(gptel org tools)
                     (format "Tool %s not found, ignoring" tname)))))
-    (list system backend model temperature tokens num tools)))
+    (when roots
+      (condition-case nil
+          (let ((val (read roots)))
+            (if (listp val) (setq roots val)
+              (setq roots (split-string roots "\n" t))))
+        (error (setq roots (split-string roots "\n" t)))))
+    (list system backend model temperature tokens num tools roots)))
 
 (defun gptel-org--restore-state ()
   "Restore gptel state for Org buffers when turning on `gptel-mode'."
@@ -559,7 +566,7 @@ ARGS are the original function call arguments."
           (progn
             (when-let* ((bounds (org-entry-get (point-min) "GPTEL_BOUNDS")))
               (gptel--restore-props (read bounds)))
-            (pcase-let ((`(,system ,backend ,model ,temperature ,tokens ,num ,tools)
+            (pcase-let ((`(,system ,backend ,model ,temperature ,tokens ,num ,tools ,roots)
                          (gptel-org--entry-properties (point-min))))
               (when system (setq-local gptel--system-message system))
               (if backend (setq-local gptel-backend backend)
@@ -574,7 +581,8 @@ ARGS are the original function call arguments."
               (when temperature (setq-local gptel-temperature temperature))
               (when tokens (setq-local gptel-max-tokens tokens))
               (when num (setq-local gptel--num-messages-to-send num))
-              (when tools (setq-local gptel-tools tools))))
+              (when tools (setq-local gptel-tools tools))
+              (when roots (setq-local gptel-project-roots roots))))
         (:success (message "gptel chat restored."))
         (error (message "Could not restore gptel state, sorry! Error: %s" status)))
       (set-buffer-modified-p modified))))
@@ -612,6 +620,9 @@ non-nil (default), display a message afterwards."
       (org-entry-put
        pt "GPTEL_MAX_TOKENS" (number-to-string gptel-max-tokens))
     (org-entry-delete pt "GPTEL_MAX_TOKENS"))
+  (if gptel-project-roots
+      (org-entry-put pt "GPTEL_PROJECT_ROOTS" (prin1-to-string gptel-project-roots))
+    (org-entry-delete pt "GPTEL_PROJECT_ROOTS"))
   (when msg
     (message "Added gptel configuration to current headline.")))
 
