@@ -1,78 +1,152 @@
 # GPTel Embedded Context Manager — Requirements
 
-## Goals
-- Provide a robust, self-contained context manager UI that can be invoked from a conversation buffer without modifying gptel core.
-- Maintain parity with the original context manager features (mark/delete, visit, reorder, add file/buffer/region, roots).
-- Ensure behavior is predictable under Evil, TTY, and GUI Emacs.
-- Keep state persistence in Org/file-local metadata without impacting gptel internals.
+## 1. Objectives
+- Provide a robust, self‑contained context manager UI that can be invoked from a conversation buffer without modifying gptel core.
+- Match or exceed the original context-manager feature set (mark/delete/visit/reorder, add file/buffer/region, project root management, persistence, help).
+- Ensure predictable behavior in GUI/TTY and with Evil enabled.
+- Preserve gptel’s current context semantics: all mutations apply to the originating conversation buffer.
 
-## Scope and Constraints
-- The manager lives in a temporary buffer and reuses the current window (toggle show/hide).
-- No modifications to core gptel files are required.
-- All context mutations must apply to the originating (target) conversation buffer.
-- UI should function in TTY and GUI.
+## 2. Constraints & Non‑Goals
+- No edits to core gptel files.
+- Manager must not rely on global overrides (e.g., `overriding-local-map`).
+- Must not push to Org’s mark ring during property reads/writes.
+- Must remain compatible with TTY Emacs and `evil-mode`.
 
-## Functional Requirements
+## 3. Invocation & Lifecycle
+- **Command:** `gptel-context-manager-toggle`.
+- Toggle shows/hides manager in the **same window**.
+- On show: save window configuration; on hide: restore it.
+- Manager buffer is named `*gptel-context: <buffer>*` (or equivalent) and is transient.
+- If the target buffer is killed, the manager must close gracefully and clear its state.
 
-### Invocation + Lifecycle
-- Provide `gptel-context-manager-toggle` to show/hide the manager.
-- When shown, store window configuration and restore it on exit.
-- If the target buffer is killed, the manager should detect and close gracefully.
+## 4. UI & Presentation
+- Use `tabulated-list-mode` with columns: **Mark**, **Type**, **Context Item**.
+- Header line must show:
+  - Target buffer name
+  - Count of context items
+  - Featured root (and “+N more” when applicable)
+- Provide styled faces:
+  - Header / target buffer name
+  - Root label
+  - Marked vs unmarked
+  - Type (buffer/region vs file)
+  - Name/details
+  - Empty list message
+- Empty list renders a friendly prompt (e.g., “No context items. Use a/B to add.”).
+- Order matches `gptel-menu` by default; **optional reverse display** via customization.
 
-### Display
-- Use `tabulated-list-mode` with columns: mark, type, context item.
-- Support styled faces for header, types, names, marks, and empty state.
-- Display order matches the order shown in `gptel-menu` (default: same order as `gptel-context`).
-- Allow an optional reversed display order via customization.
+## 5. Keybindings (Manager)
+All bindings must work in Emacs and Evil (normal/motion):
 
-### Core Commands
-- Refresh, visit, mark/unmark, mark regexp, delete, delete marked.
-- Move entry up/down and keep cursor on moved entry.
+- **Navigation & Actions**
+  - `g` refresh
+  - `RET` visit entry
+  - `q` quit manager
+  - `?` open help (transient)
 
-### Add Commands
-- Add file to context, defaulting to the featured root as the starting directory.
-- Add buffer to context as a buffer entry (not a region).
-- Add region to context using:
-  - Active region in selected buffer, or
-  - Interactive region selection mode (confirm/cancel), or
-  - Line number prompts as fallback.
+- **Mark/Delete**
+  - `d` mark delete
+  - `u` unmark
+  - `U` unmark all
+  - `t` toggle mark
+  - `%` mark regexp
+  - `x` delete marked
+  - `D` delete at point
 
-### Region Selection Flow
-- Provide a buffer-local “region selection” minor mode with low-conflict keys:
+- **Add**
+  - `a` add file (uses featured root as default directory)
+  - `B` add buffer (adds a **buffer** entry, not a region)
+  - `r` add region
+
+- **Project Roots**
+  - `R` add root
+  - `F` feature root (move to top)
+  - `X` remove root
+
+- **State**
+  - `S` save state
+  - `L` load state
+
+- **Order**
+  - `M-p` move entry up
+  - `M-n` move entry down
+
+## 6. Core Actions
+### Refresh & Visit
+- Refresh must rebuild the list from the target buffer.
+- Visit must open the referenced file/buffer in another window.
+
+### Mark/Delete
+- Marking uses a styled mark character.
+- Execute deletes all marked entries.
+- Delete at point prompts for confirmation.
+
+### Reordering
+- Move up/down must reorder the underlying `gptel-context` list.
+- Cursor should remain on the moved entry.
+- Must work correctly when display order is reversed.
+
+## 7. Add Commands
+### Add File
+- Prompts for file with default directory = featured root (if set).
+- Uses gptel’s file add logic (binary checks, mime handling).
+
+### Add Buffer
+- Prompts for a live buffer.
+- Adds a buffer entry (not region overlays).
+- Entry type should render as **buffer**.
+
+### Add Region
+- Uses any active region in the selected buffer.
+- If no region is active:
+  - Offer interactive selection mode, or
+  - Fall back to line‑number prompts.
+
+## 8. Region Selection Mode
+- Temporary buffer‑local minor mode enables two keys:
   - Confirm: `C-c C-;`
   - Cancel: `C-c C-,`
-- Persist a header-line hint while selection is active.
+- Header line shows a persistent hint until confirm/cancel.
+- Selection returns to manager and adds region overlays.
 
-### Project Roots
-- Maintain a buffer-local list of manager roots in the target buffer.
-- Commands:
-  - Add root
-  - Feature root (move to top)
-  - Remove root
-- Header line should show the featured root and count of additional roots.
+## 9. Project Roots
+- Manager maintains `gptel-context-manager-roots` (buffer‑local to target).
+- Roots are displayed in header (featured root + count of additional roots).
+- Root commands update local state and refresh list immediately.
 
-### State Persistence
-- Persist manager state in Org properties when the target buffer is in Org mode:
+## 10. State Persistence
+### Org Buffers
+- Persist state to Org properties:
   - `GPTEL_PROJECT_ROOTS`
   - `GPTEL_CONTEXT`
-- For non-Org buffers, store `gptel-context-manager-state` (buffer-local) and optionally as a file-local variable with prefix argument.
+- Use `org-entry-put` / `org-entry-delete` without pushing to mark ring.
 
-### Context Serialization
-- Serialize file contexts as strings or `(file :mime ...)` entries.
-- Serialize file-backed buffers and regions as `(:file PATH :lines (START END))`.
-- Restore serialized ranges by reopening the file and recreating overlays.
-- Skip non-serializable entries with a warning.
+### Non‑Org Buffers
+- Maintain buffer‑local `gptel-context-manager-state`.
+- With prefix arg, store file‑local variable for persistence.
 
-### Help Menu
-- A Magit-style transient menu opened via `?`.
-- Should render fully on the first invocation and close via `q`.
-- Avoid custom window display hacks unless required.
+## 11. Context Serialization
+- Serializable entries:
+  - File entries as strings or `(file :mime …)`
+  - File‑backed buffer entries as `(:file PATH :lines (1 N))`
+  - File‑backed region overlays as `(:file PATH :lines (START END))`
+- On load:
+  - Recreate overlays from `:file`/`:lines` entries
+  - Skip non‑serializable items with an informative warning
 
-### Evil Integration
-- Define normal/motion bindings equivalent to Emacs keymap.
-- Use safe macro expansion so Evil doesn’t throw compile/runtime errors.
+## 12. Help Menu (Transient)
+- Help is a **Magit‑style transient prefix** invoked by `?`.
+- The menu must render fully on the first invocation.
+- `q` must close the help menu; `Q` may quit the manager.
+- Avoid custom display hacks unless required; use transient defaults where possible.
 
-## Non-Functional Requirements
-- Minimize global side effects (no overriding local maps globally).
-- Avoid pushing to Org’s mark ring when reading/writing properties.
-- Keep code structured and documented for open-source use.
+## 13. Evil Integration
+- Provide equivalent bindings in Evil normal/motion state.
+- Avoid compile/runtime macro errors (`evil-define-key` must be invoked safely).
+- Set initial state to normal for the manager buffer.
+
+## 14. Compatibility & Quality
+- TTY and GUI compatibility.
+- No global keymap overrides.
+- Avoid side effects in unrelated buffers.
+- Code should be structured, documented, and ready for open‑source review.
