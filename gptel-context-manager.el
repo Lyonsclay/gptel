@@ -104,8 +104,29 @@
 (with-eval-after-load 'evil
   (when (fboundp 'evil-set-initial-state)
     (evil-set-initial-state 'gptel-context-manager-mode 'normal))
-  (when (fboundp 'evil-make-overriding-map)
-    (evil-make-overriding-map gptel-context-manager-mode-map 'normal)))
+  (when (fboundp 'evil-define-key)
+    (evil-define-key '(normal motion) gptel-context-manager-mode-map
+      "g"   #'gptel-context-manager-refresh
+      "q"   #'gptel-context-manager-toggle
+      (kbd "RET") #'gptel-context-manager-visit
+      "?"   #'gptel-context-manager-help
+      "d"   #'gptel-context-manager-mark
+      "u"   #'gptel-context-manager-unmark
+      "U"   #'gptel-context-manager-unmark-all
+      "t"   #'gptel-context-manager-toggle-mark
+      "%"   #'gptel-context-manager-mark-regexp
+      "x"   #'gptel-context-manager-execute
+      "D"   #'gptel-context-manager-delete-at-point
+      "a"   #'gptel-context-manager-add-file
+      "B"   #'gptel-context-manager-add-buffer
+      "r"   #'gptel-context-manager-add-region
+      "R"   #'gptel-context-manager-add-root
+      "F"   #'gptel-context-manager-feature-root
+      "X"   #'gptel-context-manager-remove-root
+      "S"   #'gptel-context-manager-save-state
+      "L"   #'gptel-context-manager-load-state
+      (kbd "M-p") #'gptel-context-manager-move-up
+      (kbd "M-n") #'gptel-context-manager-move-down)))
 
 ;;; Display
 
