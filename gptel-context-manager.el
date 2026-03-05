@@ -7,6 +7,9 @@
 (require 'transient)
 (require 'compat)
 
+(eval-when-compile
+(require 'evil))
+
 (defgroup gptel-context-manager nil
   "Context manager for gptel."
   :group 'gptel)
@@ -105,28 +108,29 @@
   (when (fboundp 'evil-set-initial-state)
     (evil-set-initial-state 'gptel-context-manager-mode 'normal))
   (when (fboundp 'evil-define-key)
-    (evil-define-key '(normal motion) gptel-context-manager-mode-map
-      "g"   #'gptel-context-manager-refresh
-      "q"   #'gptel-context-manager-toggle
-      (kbd "RET") #'gptel-context-manager-visit
-      "?"   #'gptel-context-manager-help
-      "d"   #'gptel-context-manager-mark
-      "u"   #'gptel-context-manager-unmark
-      "U"   #'gptel-context-manager-unmark-all
-      "t"   #'gptel-context-manager-toggle-mark
-      "%"   #'gptel-context-manager-mark-regexp
-      "x"   #'gptel-context-manager-execute
-      "D"   #'gptel-context-manager-delete-at-point
-      "a"   #'gptel-context-manager-add-file
-      "B"   #'gptel-context-manager-add-buffer
-      "r"   #'gptel-context-manager-add-region
-      "R"   #'gptel-context-manager-add-root
-      "F"   #'gptel-context-manager-feature-root
-      "X"   #'gptel-context-manager-remove-root
-      "S"   #'gptel-context-manager-save-state
-      "L"   #'gptel-context-manager-load-state
-      (kbd "M-p") #'gptel-context-manager-move-up
-      (kbd "M-n") #'gptel-context-manager-move-down)))
+    (eval
+     '(evil-define-key '(normal motion) gptel-context-manager-mode-map
+        "g"   #'gptel-context-manager-refresh
+        "q"   #'gptel-context-manager-toggle
+        (kbd "RET") #'gptel-context-manager-visit
+        "?"   #'gptel-context-manager-help
+        "d"   #'gptel-context-manager-mark
+        "u"   #'gptel-context-manager-unmark
+        "U"   #'gptel-context-manager-unmark-all
+        "t"   #'gptel-context-manager-toggle-mark
+        "%"   #'gptel-context-manager-mark-regexp
+        "x"   #'gptel-context-manager-execute
+        "D"   #'gptel-context-manager-delete-at-point
+        "a"   #'gptel-context-manager-add-file
+        "B"   #'gptel-context-manager-add-buffer
+        "r"   #'gptel-context-manager-add-region
+        "R"   #'gptel-context-manager-add-root
+        "F"   #'gptel-context-manager-feature-root
+        "X"   #'gptel-context-manager-remove-root
+        "S"   #'gptel-context-manager-save-state
+        "L"   #'gptel-context-manager-load-state
+        (kbd "M-p") #'gptel-context-manager-move-up
+        (kbd "M-n") #'gptel-context-manager-move-down))))
 
 ;;; Display
 
@@ -136,7 +140,7 @@
   (unless (buffer-live-p gptel-context-manager--target-buffer)
     (error "Target buffer for context manager is dead"))
   (let* ((entries nil)
-         (ctx-alist (buffer-local-value 'gptel-context--alist gptel-context-manager--target-buffer))
+         (ctx-alist (buffer-local-value 'gptel-context gptel-context-manager--target-buffer))
          (roots (buffer-local-value 'gptel-context-manager-roots gptel-context-manager--target-buffer))
          (featured-root (car roots))
          (more-roots (if (> (length roots) 1) (format " (+%d more)" (1- (length roots))) ""))
@@ -146,18 +150,36 @@
         (push (list nil (vector "" "" (propertize "No context items. Use a/B to add." 'face 'gptel-context-manager-empty-face))) entries)
       (dolist (item display-alist)
         (let* ((source (car item))
-               (type (cond ((bufferp source) "buffer")
-                           ((stringp source) "file")
-                           (t "unknown")))
-               (name (cond ((bufferp source) (buffer-name source))
-                           ((stringp source) (file-name-nondirectory source))
-                           (t (format "%s" source))))
-               (name-face (if (string= type "file") 'gptel-context-manager-file-face 'gptel-context-manager-buffer-face)))
-          (push (list source (vector " " 
-                                     (propertize type 'face 'gptel-context-manager-type-face) 
-                                     (propertize name 'face name-face))) entries))))
+               (spec (cdr item)))
+          ;; Check if this is a buffer with overlays (regions)
+          (if (and (bufferp source) (plist-get spec :overlays))
+              ;; Buffer with region overlays - create an entry for each overlay
+              (dolist (ov (plist-get spec :overlays))
+                (when (overlay-start ov)  ; Check overlay is still valid
+                  (let* ((start (overlay-start ov))
+                         (end (overlay-end ov))
+                         (line-start (with-current-buffer source
+                                       (line-number-at-pos start)))
+                         (line-end (with-current-buffer source
+                                     (line-number-at-pos end)))
+                         (name (format "%s:%d-%d" (buffer-name source) line-start line-end)))
+                    (push (list ov (vector " "
+                                           (propertize "region" 'face 'gptel-context-manager-type-face)
+                                           (propertize name 'face 'gptel-context-manager-buffer-face)))
+                          entries))))
+            ;; Regular buffer or file entry
+            (let* ((type (cond ((bufferp source) "buffer")
+                               ((stringp source) "file")
+                               (t "unknown")))
+                   (name (cond ((bufferp source) (buffer-name source))
+                               ((stringp source) (file-name-nondirectory source))
+                               (t (format "%s" source))))
+                   (name-face (if (string= type "file") 'gptel-context-manager-file-face 'gptel-context-manager-buffer-face)))
+              (push (list source (vector " "
+                                         (propertize type 'face 'gptel-context-manager-type-face)
+                                         (propertize name 'face name-face))) entries))))))
     
-    (setq tabulated-list-entries (nreverse entries))
+    (setq tabulated-list-entries entries)
     (setq header-line-format
           (concat (propertize (format " Context for: %s " (buffer-name gptel-context-manager--target-buffer)) 'face 'gptel-context-manager-header-face)
                   (format "| %d items " (length ctx-alist))
@@ -173,6 +195,12 @@
   (let ((id (tabulated-list-get-id)))
     (unless id (error "No entry at point"))
     (cond
+     ((overlayp id)
+      (let ((buf (overlay-buffer id))
+            (pos (overlay-start id)))
+        (when buf
+          (pop-to-buffer buf)
+          (goto-char pos))))
      ((bufferp id) (pop-to-buffer id))
      ((stringp id) (find-file-other-window id))
      ((and (consp id) (eq (car id) 'file)) (find-file-other-window (plist-get (cdr id) :file)))
@@ -230,15 +258,24 @@
     (save-excursion
       (goto-char (point-min))
       (while (not (eobp))
-        (let ((mark (aref (tabulated-list-get-entry) 0)))
-          (when (string-match-p (regexp-quote (string gptel-context-manager-mark-char)) mark)
-            (push (tabulated-list-get-id) to-delete)))
+        (let ((id (tabulated-list-get-id)))
+          (when id
+            ;; Check for the tag at the beginning of the line
+            (save-excursion
+              (beginning-of-line)
+              (when (looking-at (format "^%c" gptel-context-manager-mark-char))
+                (push id to-delete)))))
         (forward-line 1)))
     (when to-delete
       (with-current-buffer gptel-context-manager--target-buffer
-        (setq gptel-context--alist
-              (cl-remove-if (lambda (item) (member (car item) to-delete))
-                            gptel-context--alist)))
+        (setq gptel-context
+              (cl-remove-if (lambda (item)
+                              (or (member (car item) to-delete)
+                                  ;; Also check if any overlay in this entry is marked
+                                  (and (bufferp (car item))
+                                       (cl-some (lambda (ov) (member ov to-delete))
+                                                 (plist-get (cdr item) :overlays)))))
+                            gptel-context)))
       (gptel-context-manager-refresh))))
 
 (defun gptel-context-manager-delete-at-point ()
@@ -248,8 +285,19 @@
     (unless id (error "No entry at point"))
     (when (y-or-n-p "Delete entry? ")
       (with-current-buffer gptel-context-manager--target-buffer
-        (setq gptel-context--alist
-              (cl-remove-if (lambda (item) (equal (car item) id)) gptel-context--alist)))
+        (cond
+         ((overlayp id)
+          ;; Remove the specific overlay from its buffer entry
+          (let ((buf (overlay-buffer id)))
+            (delete-overlay id)
+            (when-let* ((entry (assoc buf gptel-context)))
+              (let ((remaining (cl-remove id (plist-get (cdr entry) :overlays))))
+                (if remaining
+                    (setcdr entry (plist-put (cdr entry) :overlays remaining))
+                  (setq gptel-context (assq-delete-all buf gptel-context)))))))
+         (t
+          (setq gptel-context
+                (cl-remove-if (lambda (item) (equal (car item) id)) gptel-context)))))
       (gptel-context-manager-refresh))))
 
 ;; Reordering
@@ -260,13 +308,13 @@
   (let ((current-id (tabulated-list-get-id)))
     (unless current-id (error "No entry at point"))
     (with-current-buffer gptel-context-manager--target-buffer
-      (let* ((alist gptel-context--alist)
+      (let* ((alist gptel-context)
              (pos (cl-position current-id alist :key #'car :test #'equal)))
         (unless pos (error "Entry not found in target buffer's context"))
         (when (> pos 0)
           (let ((target-pos (max 0 (- pos (or arg 1)))))
             (let ((elem (nth pos alist)))
-              (setq gptel-context--alist (append (cl-subseq alist 0 target-pos)
+              (setq gptel-context (append (cl-subseq alist 0 target-pos)
                                                  (list elem)
                                                  (cl-subseq alist target-pos pos)
                                                  (nthcdr (1+ pos) alist))))))))
@@ -279,13 +327,13 @@
   (let ((current-id (tabulated-list-get-id)))
     (unless current-id (error "No entry at point"))
     (with-current-buffer gptel-context-manager--target-buffer
-      (let* ((alist gptel-context--alist)
+      (let* ((alist gptel-context)
              (pos (cl-position current-id alist :key #'car :test #'equal)))
         (unless pos (error "Entry not found in target buffer's context"))
         (when (< pos (1- (length alist)))
           (let ((target-pos (min (length alist) (+ pos (or arg 1)))))
             (let ((elem (nth pos alist)))
-              (setq gptel-context--alist (append (cl-subseq alist 0 pos)
+              (setq gptel-context (append (cl-subseq alist 0 pos)
                                                  (cl-subseq alist (1+ pos) (1+ target-pos))
                                                  (list elem)
                                                  (nthcdr (1+ target-pos) alist))))))))
@@ -314,14 +362,19 @@
 (defun gptel-context-manager-add-buffer (buffer)
   "Add BUFFER to the context."
   (interactive
-   (list (read-buffer "Add buffer to context: " nil t)))
+   (list (read-buffer "Add buffer to context: " (other-buffer (current-buffer)) t)))
   (let ((buf (get-buffer buffer)))
     (unless (buffer-live-p buf) (error "Buffer is dead"))
     (with-current-buffer gptel-context-manager--target-buffer
-      (gptel-context--add-buffer buf)))
+      ;; Add buffer as a full-buffer context (no overlays)
+      (unless (assoc buf gptel-context)
+        (push (list buf) gptel-context))))
   (gptel-context-manager-refresh))
 
 ;; Region Selection Mode
+(defvar-local gptel-context-manager--selection-target nil
+  "The target buffer to receive the selected region context.")
+
 (defvar-local gptel-context-manager-region-selection-mode nil)
 
 (define-minor-mode gptel-context-manager-region-selection-mode
@@ -336,29 +389,72 @@
     (setq header-line-format nil)))
 
 (defun gptel-context-manager-add-region ()
-  "Start region selection mode in the target buffer."
+  "Start region selection mode in a selected buffer."
   (interactive)
-  (let ((target-buf gptel-context-manager--target-buffer))
+  (let ((target-buf gptel-context-manager--target-buffer)
+        (choice (completing-read
+                 "Select region from (buffer or file): "
+                 (lambda (str pred action)
+                   (if (eq action 'metadata)
+                       '(metadata (category . file))
+                     (complete-with-action
+                      action
+                      (append
+                       ;; Buffer names
+                       (mapcar #'buffer-name
+                               (cl-remove-if
+                                (lambda (b) (string-prefix-p " " (buffer-name b)))
+                                (buffer-list)))
+                       ;; Recent files
+                       recentf-list)
+                      str pred)))
+                 nil t)))
     (gptel-context-manager-toggle) ;; hide manager
-    (with-current-buffer target-buf
-      (gptel-context-manager-region-selection-mode 1))))
+    (if (get-buffer choice)
+        (switch-to-buffer choice)
+      (find-file choice))
+    (setq gptel-context-manager--selection-target target-buf)
+    (gptel-context-manager-region-selection-mode 1)
+    (message "Select region, then C-c C-; to confirm or C-c C-, to cancel")))
 
 (defun gptel-context-manager-region-selection-confirm ()
   "Confirm region selection and add to context."
   (interactive)
   (unless (region-active-p)
     (error "No active region"))
-  (gptel-context-manager-region-selection-mode -1)
-  (gptel-context--add-region (region-beginning) (region-end))
-  (deactivate-mark)
-  (gptel-context-manager-toggle))
+  (let ((target gptel-context-manager--selection-target)
+        (source (current-buffer))
+        (beg (region-beginning))
+        (end (region-end)))
+    (gptel-context-manager-region-selection-mode -1)
+    (deactivate-mark)
+    (if (buffer-live-p target)
+        (progn
+          ;; Manually create the context overlay and add it to the target buffer's list
+          (let ((ov (make-overlay beg end source)))
+            (overlay-put ov 'gptel-context t)
+            (overlay-put ov 'evaporate t)
+            (with-current-buffer target
+              (let ((entry (assoc source gptel-context)))
+                (if entry
+                    ;; Add overlay to existing entry's :overlays list
+                    (let ((overlays (plist-get (cdr entry) :overlays)))
+                      (setcdr entry (plist-put (cdr entry) :overlays (cons ov overlays))))
+                  ;; Create new entry with :overlays plist
+                  (push (cons source (list :overlays (list ov))) gptel-context)))))
+          (switch-to-buffer target)
+          (gptel-context-manager-toggle))
+      (error "Target buffer for context is dead"))))
 
 (defun gptel-context-manager-region-selection-cancel ()
   "Cancel region selection."
   (interactive)
-  (gptel-context-manager-region-selection-mode -1)
-  (deactivate-mark)
-  (gptel-context-manager-toggle))
+  (let ((target gptel-context-manager--selection-target))
+    (gptel-context-manager-region-selection-mode -1)
+    (deactivate-mark)
+    (when (buffer-live-p target)
+      (switch-to-buffer target)
+      (gptel-context-manager-toggle))))
 
 ;;; Project Roots
 
@@ -396,7 +492,7 @@
 
 (defun gptel-context-manager--serialize-state ()
   "Serialize context and roots for persistence."
-  (let ((ctx-alist (buffer-local-value 'gptel-context--alist gptel-context-manager--target-buffer))
+  (let ((ctx-alist (buffer-local-value 'gptel-context gptel-context-manager--target-buffer))
         (roots (buffer-local-value 'gptel-context-manager-roots gptel-context-manager--target-buffer))
         (serializable-ctx nil))
     (dolist (item ctx-alist)
@@ -452,7 +548,7 @@
       (when state
         (setq gptel-context-manager-roots (alist-get 'roots state))
         (let ((ctx-data (alist-get 'context state)))
-          (setq gptel-context--alist nil)
+          (setq gptel-context nil)
           (dolist (item ctx-data)
             (let ((file (plist-get item :file))
                   (lines (plist-get item :lines)))
