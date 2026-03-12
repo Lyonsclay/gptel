@@ -511,21 +511,23 @@
               (if (not overlays)
                   (push (list :file file :type 'buffer) serializable-ctx)
                 (dolist (ov overlays)
-                  (push (list :file file :lines (list (line-number-at-pos (overlay-start ov))
-                                                      (line-number-at-pos (overlay-end ov))))
+                  (push (list :file file :lines (with-current-buffer source
+                                                  (list (line-number-at-pos (overlay-start ov))
+                                                        (line-number-at-pos (overlay-end ov)))))
                         serializable-ctx)))))))))
     `((roots . ,roots) (context . ,(nreverse serializable-ctx)))))
 
 (defun gptel-context-manager-save-state (&optional arg)
-  "Save context state. With prefix ARG, add file-local variable."
+  "Save context state.  With prefix ARG, add file-local variable."
   (interactive "P")
   (let* ((state (gptel-context-manager--serialize-state))
          (ctx-str (prin1-to-string (alist-get 'context state)))
          (roots-str (prin1-to-string (alist-get 'roots state))))
     (with-current-buffer gptel-context-manager--target-buffer
       (if (derived-mode-p 'org-mode)
-          (let ((org-inhibit-logging t))
-            (when (fboundp 'org-entry-put)
+          (when (fboundp 'org-entry-put)
+            (save-excursion
+              (goto-char (point-min))
               (org-entry-put nil "GPTEL_CONTEXT" ctx-str)
               (org-entry-put nil "GPTEL_PROJECT_ROOTS" roots-str)
               (message "Saved state to Org properties.")))
@@ -542,14 +544,17 @@
     (let ((state nil))
       (if (derived-mode-p 'org-mode)
           (when (fboundp 'org-entry-get)
-            (let ((ctx-prop (org-entry-get nil "GPTEL_CONTEXT"))
-                  (roots-prop (org-entry-get nil "GPTEL_PROJECT_ROOTS")))
-              (when ctx-prop
-                (setq state `((context . ,(car (read-from-string ctx-prop))))))
-              (when roots-prop
-                (setf (alist-get 'roots state) (car (read-from-string roots-prop))))))
+            (save-excursion
+              (goto-char (point-min))
+              (let ((ctx-prop (org-entry-get nil "GPTEL_CONTEXT"))
+                    (roots-prop (org-entry-get nil "GPTEL_PROJECT_ROOTS")))
+                (when ctx-prop
+                  (setq state `((context . ,(car (read-from-string ctx-prop))))))
+                (when roots-prop
+                  (setf (alist-get 'roots state) (car (read-from-string roots-prop)))))))
+        ;; Else: non-org buffer
         (setq state gptel-context-manager-state))
-      
+
       (when state
         (setq gptel-context-manager-roots (alist-get 'roots state))
         (let ((ctx-data (alist-get 'context state)))
@@ -566,7 +571,7 @@
                         (let ((start (point)))
                           (goto-char (point-min))
                           (forward-line (1- (cadr lines)))
-                          (gptel-context--add-region start (point)))))
+                          (gptel-context--add-region (current-buffer) start (point)))))
                   (gptel-context-add-file file))))))
         (message "Loaded state."))))
   (when (derived-mode-p 'gptel-context-manager-mode)
