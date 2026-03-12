@@ -149,8 +149,9 @@
     (if (null display-alist)
         (push (list nil (vector "" "" (propertize "No context items. Use a/B to add." 'face 'gptel-context-manager-empty-face))) entries)
       (dolist (item display-alist)
-        (let* ((source (car item))
-               (spec (cdr item)))
+        (let* ((normalized (ensure-list item))
+               (source (car normalized))
+               (spec (cdr normalized)))
           ;; Check if this is a buffer with overlays (regions)
           (if (and (bufferp source) (plist-get spec :overlays))
               ;; Buffer with region overlays - create an entry for each overlay
@@ -270,11 +271,14 @@
       (with-current-buffer gptel-context-manager--target-buffer
         (setq gptel-context
               (cl-remove-if (lambda (item)
-                              (or (member (car item) to-delete)
-                                  ;; Also check if any overlay in this entry is marked
-                                  (and (bufferp (car item))
-                                       (cl-some (lambda (ov) (member ov to-delete))
-                                                 (plist-get (cdr item) :overlays)))))
+                              (let* ((normalized (ensure-list item))
+                                     (source (car normalized))
+                                     (spec (cdr normalized)))
+                                (or (member source to-delete)
+                                    ;; Also check if any overlay in this entry is marked
+                                    (and (bufferp source)
+                                         (cl-some (lambda (ov) (member ov to-delete))
+                                                   (plist-get spec :overlays))))))
                             gptel-context)))
       (gptel-context-manager-refresh))))
 
@@ -297,7 +301,7 @@
                   (setq gptel-context (assq-delete-all buf gptel-context)))))))
          (t
           (setq gptel-context
-                (cl-remove-if (lambda (item) (equal (car item) id)) gptel-context)))))
+                (cl-remove-if (lambda (item) (equal (car (ensure-list item)) id)) gptel-context)))))
       (gptel-context-manager-refresh))))
 
 ;; Reordering
@@ -309,7 +313,7 @@
     (unless current-id (error "No entry at point"))
     (with-current-buffer gptel-context-manager--target-buffer
       (let* ((alist gptel-context)
-             (pos (cl-position current-id alist :key #'car :test #'equal)))
+             (pos (cl-position current-id alist :key (lambda (x) (car (ensure-list x))) :test #'equal)))
         (unless pos (error "Entry not found in target buffer's context"))
         (when (> pos 0)
           (let ((target-pos (max 0 (- pos (or arg 1)))))
@@ -328,7 +332,7 @@
     (unless current-id (error "No entry at point"))
     (with-current-buffer gptel-context-manager--target-buffer
       (let* ((alist gptel-context)
-             (pos (cl-position current-id alist :key #'car :test #'equal)))
+             (pos (cl-position current-id alist :key (lambda (x) (car (ensure-list x))) :test #'equal)))
         (unless pos (error "Entry not found in target buffer's context"))
         (when (< pos (1- (length alist)))
           (let ((target-pos (min (length alist) (+ pos (or arg 1)))))
@@ -496,8 +500,9 @@
         (roots (buffer-local-value 'gptel-context-manager-roots gptel-context-manager--target-buffer))
         (serializable-ctx nil))
     (dolist (item ctx-alist)
-      (let ((source (car item))
-            (overlays (cdr item)))
+      (let* ((normalized (ensure-list item))
+             (source (car normalized))
+             (overlays (plist-get (cdr normalized) :overlays)))
         (cond
          ((stringp source) (push (list :file source) serializable-ctx))
          ((bufferp source)
