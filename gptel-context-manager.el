@@ -1,5 +1,9 @@
-
 ;;; gptel-context-manager.el --- Context manager for gptel  -*- lexical-binding: t; -*-
+
+;;; Commentary:
+;; Context manager for gptel.
+
+;;; Code:
 
 (require 'cl-lib)
 (require 'tabulated-list)
@@ -9,6 +13,8 @@
 
 (eval-when-compile
 (require 'evil))
+
+(declare-function org-at-heading-p "org" (&optional invisible-ok))
 
 (defgroup gptel-context-manager nil
   "Context manager for gptel."
@@ -65,6 +71,8 @@
 
 (defvar gptel-context-manager-mark-char ?*
   "Character used to mark entries.")
+
+(defvar recentf-list)
 
 ;;; Keymap
 
@@ -474,7 +482,7 @@
 (defun gptel-context-manager-feature-root (root)
   "Feature ROOT (move to top of the roots list)."
   (interactive
-   (list (completing-read "Feature project root: " 
+   (list (completing-read "Feature project root: "
                           (buffer-local-value 'gptel-context-manager-roots gptel-context-manager--target-buffer))))
   (with-current-buffer gptel-context-manager--target-buffer
     (setq gptel-context-manager-roots
@@ -485,7 +493,7 @@
 (defun gptel-context-manager-remove-root (root)
   "Remove ROOT from the project roots."
   (interactive
-   (list (completing-read "Remove project root: " 
+   (list (completing-read "Remove project root: "
                           (buffer-local-value 'gptel-context-manager-roots gptel-context-manager--target-buffer))))
   (with-current-buffer gptel-context-manager--target-buffer
     (setq gptel-context-manager-roots (remove root gptel-context-manager-roots)))
