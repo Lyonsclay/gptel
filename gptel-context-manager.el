@@ -622,7 +622,14 @@
   (interactive)
   (let* ((target-buf (or gptel-context-manager--target-buffer (current-buffer)))
          (mgr-buf-name (format "*gptel-context: %s*" (buffer-name target-buf)))
-         (mgr-buf (get-buffer mgr-buf-name)))
+         (mgr-buf (get-buffer mgr-buf-name))
+         (mgr-target-dead (and mgr-buf
+                               (not (buffer-live-p
+                                     (buffer-local-value 'gptel-context-manager--target-buffer mgr-buf))))))
+    ;; If the manager buffer exists but its target is dead, reconnect to the new target
+    (when mgr-target-dead
+      (with-current-buffer mgr-buf
+        (setq gptel-context-manager--target-buffer target-buf)))
     (if (and mgr-buf (eq (current-buffer) mgr-buf))
         ;; We are in the manager buffer, hide it
         (let ((win-conf gptel-context-manager--window-configuration))
