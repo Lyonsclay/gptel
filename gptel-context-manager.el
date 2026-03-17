@@ -542,8 +542,8 @@ If BUFFER is nil, use `gptel-context-manager--target-buffer'."
                     (setf (alist-get 'roots state) (car (read-from-string roots-prop))))
                   (setq-local gptel-context-manager-state state)
                   (gptel-context-manager-load-state))))))))
-      (gptel-context-manager-state
-       (gptel-context-manager-load-state)))))
+      (when gptel-context-manager-state
+        (gptel-context-manager-load-state)))))
 
 ;;; State Persistence
 
