@@ -15,6 +15,7 @@
 (require 'evil))
 
 (declare-function org-at-heading-p "org" (&optional invisible-ok))
+(declare-function org-entry-get "org" (&optional pom property inherit literal-nil))
 
 (defgroup gptel-context-manager nil
   "Context manager for gptel."
@@ -171,7 +172,12 @@
                                        (line-number-at-pos start)))
                          (line-end (with-current-buffer source
                                      (line-number-at-pos end)))
-                         (name (format "%s:%d-%d" (buffer-name source) line-start line-end)))
+                         (name (format "%s:%d-%d"
+                                       (or (and (buffer-file-name source)
+                                                (abbreviate-file-name (buffer-file-name source)))
+                                           (buffer-name source))
+                                       line-start line-end)))
+
                     (push (list ov (vector " "
                                            (propertize "region" 'face 'gptel-context-manager-type-face)
                                            (propertize name 'face 'gptel-context-manager-buffer-face)))
@@ -180,8 +186,13 @@
             (let* ((type (cond ((bufferp source) "buffer")
                                ((stringp source) "file")
                                (t "unknown")))
-                   (name (cond ((bufferp source) (buffer-name source))
-                               ((stringp source) (file-name-nondirectory source))
+                   (name (cond ((bufferp source)
+                                (or (and (buffer-file-name source)
+                                         (abbreviate-file-name (buffer-file-name source)))
+                                    (buffer-name source)))
+
+                               ((stringp source) (abbreviate-file-name
+                                                  (expand-file-name source)))
                                (t (format "%s" source))))
                    (name-face (if (string= type "file") 'gptel-context-manager-file-face 'gptel-context-manager-buffer-face)))
               (push (list source (vector " "
@@ -500,6 +511,40 @@
   (when (derived-mode-p 'gptel-context-manager-mode)
     (gptel-context-manager-refresh)))
 
+;;; State Hydration
+
+(defun gptel-context-manager--maybe-hydrate-target-from-storage (&optional buffer)
+  "Hydrate BUFFER's `gptel-context' and roots from persistent storage.
+
+This loads persisted state into BUFFER if (a) BUFFER is in Org mode and
+has the relevant properties at its first entry or (b) BUFFER has a
+buffer-local `gptel-context-manager-state'.  This is a no-op if no state
+is available.
+
+If BUFFER is nil, use `gptel-context-manager--target-buffer'."
+  (let ((buf (or buffer gptel-context-manager--target-buffer)))
+    (unless (buffer-live-p buf)
+      (error "Target buffer for context manager is dead"))
+    (with-current-buffer buf
+      (cond
+       ((derived-mode-p 'org-mode)
+        (when (fboundp 'org-entry-get)
+          (save-excursion
+            (goto-char (point-min))
+            (let ((ctx-prop (org-entry-get nil "GPTEL_CONTEXT"))
+                  (roots-prop (org-entry-get nil "GPTEL_PROJECT_ROOTS")))
+              (when (or ctx-prop roots-prop)
+                (setq-local gptel-context-manager-state nil)
+                (let ((state nil))
+                  (when ctx-prop
+                    (setq state `((context . ,(car (read-from-string ctx-prop))))))
+                  (when roots-prop
+                    (setf (alist-get 'roots state) (car (read-from-string roots-prop))))
+                  (setq-local gptel-context-manager-state state)
+                  (gptel-context-manager-load-state))))))))
+      (gptel-context-manager-state
+       (gptel-context-manager-load-state)))))
+
 ;;; State Persistence
 
 (defun gptel-context-manager--serialize-state ()
@@ -560,9 +605,7 @@
                   (setq state `((context . ,(car (read-from-string ctx-prop))))))
                 (when roots-prop
                   (setf (alist-get 'roots state) (car (read-from-string roots-prop)))))))
-        ;; Else: non-org buffer
         (setq state gptel-context-manager-state))
-
       (when state
         (setq gptel-context-manager-roots (alist-get 'roots state))
         (let ((ctx-data (alist-get 'context state)))
@@ -626,10 +669,19 @@
          (mgr-target-dead (and mgr-buf
                                (not (buffer-live-p
                                      (buffer-local-value 'gptel-context-manager--target-buffer mgr-buf))))))
-    ;; If the manager buffer exists but its target is dead, reconnect to the new target
+    ;; Ensure the target buffer is hydrated from persistent storage before display.
+    (when (buffer-live-p target-buf)
+      (gptel-context-manager--maybe-hydrate-target-from-storage target-buf))
+    ;; Ensure the target buffer is hydrated from its persistent storage before display.
+    (when (buffer-live-p target-buf)
+      (gptel-context-manager--maybe-hydrate-target-from-storage target-buf))
+    ;; If the manager buffer exists but its target is dead, reconnect to the new
+    ;; target and hydrate that target from storage too.
     (when mgr-target-dead
       (with-current-buffer mgr-buf
-        (setq gptel-context-manager--target-buffer target-buf)))
+        (setq gptel-context-manager--target-buffer target-buf))
+      (when (buffer-live-p target-buf)
+        (gptel-context-manager--maybe-hydrate-target-from-storage target-buf)))
     (if (and mgr-buf (eq (current-buffer) mgr-buf))
         ;; We are in the manager buffer, hide it
         (let ((win-conf gptel-context-manager--window-configuration))
