@@ -573,10 +573,11 @@ If BUFFER is nil, use `gptel-context-manager--target-buffer'."
 (defun gptel-context-manager-save-state (&optional arg)
   "Save context state.  With prefix ARG, add file-local variable."
   (interactive "P")
-  (let* ((state (gptel-context-manager--serialize-state))
+  (let* ((target-buf (or gptel-context-manager--target-buffer (current-buffer)))
+         (state (with-current-buffer target-buf (gptel-context-manager--serialize-state)))
          (ctx-str (prin1-to-string (alist-get 'context state)))
          (roots-str (prin1-to-string (alist-get 'roots state))))
-    (with-current-buffer gptel-context-manager--target-buffer
+    (with-current-buffer target-buf
       (if (derived-mode-p 'org-mode)
           (when (fboundp 'org-entry-put)
             (save-excursion
@@ -593,40 +594,41 @@ If BUFFER is nil, use `gptel-context-manager--target-buffer'."
 (defun gptel-context-manager-load-state ()
   "Load context state from Org properties or buffer locals."
   (interactive)
-  (with-current-buffer gptel-context-manager--target-buffer
-    (let ((state nil))
-      (if (derived-mode-p 'org-mode)
-          (when (fboundp 'org-entry-get)
-            (save-excursion
-              (goto-char (point-min))
-              (let ((ctx-prop (org-entry-get nil "GPTEL_CONTEXT"))
-                    (roots-prop (org-entry-get nil "GPTEL_PROJECT_ROOTS")))
-                (when ctx-prop
-                  (setq state `((context . ,(car (read-from-string ctx-prop))))))
-                (when roots-prop
-                  (setf (alist-get 'roots state) (car (read-from-string roots-prop)))))))
-        (setq state gptel-context-manager-state))
-      (when state
-        (setq gptel-context-manager-roots (alist-get 'roots state))
-        (let ((ctx-data (alist-get 'context state)))
-          (setq gptel-context nil)
-          (dolist (item ctx-data)
-            (let ((file (plist-get item :file))
-                  (lines (plist-get item :lines)))
-              (when (and file (file-exists-p file))
-                (if lines
-                    (with-current-buffer (find-file-noselect file)
-                      (save-excursion
-                        (goto-char (point-min))
-                        (forward-line (1- (car lines)))
-                        (let ((start (point)))
+  (let ((target-buf (or gptel-context-manager--target-buffer (current-buffer))))
+    (with-current-buffer target-buf
+      (let ((state nil))
+        (if (derived-mode-p 'org-mode)
+            (when (fboundp 'org-entry-get)
+              (save-excursion
+                (goto-char (point-min))
+                (let ((ctx-prop (org-entry-get nil "GPTEL_CONTEXT"))
+                      (roots-prop (org-entry-get nil "GPTEL_PROJECT_ROOTS")))
+                  (when ctx-prop
+                    (setq state `((context . ,(car (read-from-string ctx-prop))))))
+                  (when roots-prop
+                    (setf (alist-get 'roots state) (car (read-from-string roots-prop)))))))
+          (setq state gptel-context-manager-state))
+        (when state
+          (setq gptel-context-manager-roots (alist-get 'roots state))
+          (let ((ctx-data (alist-get 'context state)))
+            (setq gptel-context nil)
+            (dolist (item ctx-data)
+              (let ((file (plist-get item :file))
+                    (lines (plist-get item :lines)))
+                (when (and file (file-exists-p file))
+                  (if lines
+                      (with-current-buffer (find-file-noselect file)
+                        (save-excursion
                           (goto-char (point-min))
-                          (forward-line (1- (cadr lines)))
-                          (gptel-context--add-region (current-buffer) start (point)))))
-                  (gptel-context-add-file file))))))
-        (message "Loaded state."))))
-  (when (derived-mode-p 'gptel-context-manager-mode)
-    (gptel-context-manager-refresh)))
+                          (forward-line (1- (car lines)))
+                          (let ((start (point)))
+                            (goto-char (point-min))
+                            (forward-line (1- (cadr lines)))
+                            (gptel-context--add-region (current-buffer) start (point)))))
+                    (gptel-context-add-file file))))))
+          (message "Loaded state."))))
+    (when (derived-mode-p 'gptel-context-manager-mode)
+      (gptel-context-manager-refresh))))
 
 ;;; Transient Menu
 
