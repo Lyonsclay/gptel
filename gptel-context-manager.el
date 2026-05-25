@@ -65,6 +65,9 @@
 (defvar-local gptel-context-manager-state nil
   "Buffer-local persistence for non-org buffers.")
 
+(defvar-local gptel-context-manager--hydrated nil
+  "Non-nil if the context has been hydrated from storage.")
+
 (defcustom gptel-context-manager-reverse-display nil
   "If non-nil, reverse the display order of the context manager list."
   :type 'boolean
@@ -526,31 +529,32 @@ If BUFFER is nil, use `gptel-context-manager--target-buffer'."
     (unless (buffer-live-p buf)
       (error "Target buffer for context manager is dead"))
     (with-current-buffer buf
-      (cond
-       ((derived-mode-p 'org-mode)
-        (when (fboundp 'org-entry-get)
-          (save-excursion
-            (goto-char (point-min))
-            (let ((ctx-prop (org-entry-get nil "GPTEL_CONTEXT"))
-                  (roots-prop (org-entry-get nil "GPTEL_PROJECT_ROOTS")))
-              (when (or ctx-prop roots-prop)
-                (setq-local gptel-context-manager-state nil)
-                (let ((state nil))
-                  (when ctx-prop
-                    (setq state `((context . ,(car (read-from-string ctx-prop))))))
-                  (when roots-prop
-                    (setf (alist-get 'roots state) (car (read-from-string roots-prop))))
-                  (setq-local gptel-context-manager-state state)
-                  (gptel-context-manager-load-state))))))))
-      (when gptel-context-manager-state
-        (gptel-context-manager-load-state)))))
-
+      (unless gptel-context-manager--hydrated
+        (let ((loaded nil))
+          (when (derived-mode-p 'org-mode)
+            (when (fboundp 'org-entry-get)
+              (save-excursion
+                (goto-char (point-min))
+                (let ((ctx-prop (org-entry-get nil "GPTEL_CONTEXT"))
+                      (roots-prop (org-entry-get nil "GPTEL_PROJECT_ROOTS")))
+                  (when (or ctx-prop roots-prop)
+                    (setq-local gptel-context-manager-state nil)
+                    (let ((state nil))
+                      (when ctx-prop
+                        (setq state `((context . ,(car (read-from-string ctx-prop))))))
+                      (when roots-prop
+                        (setf (alist-get 'roots state) (car (read-from-string roots-prop))))
+                      (setq-local gptel-context-manager-state state)
+                      (gptel-context-manager-load-state)
+                      (setq loaded t)))))))          (when (and (not loaded) gptel-context-manager-state)
+            (gptel-context-manager-load-state))
+          (setq gptel-context-manager--hydrated t))))))
 ;;; State Persistence
 
 (defun gptel-context-manager--serialize-state ()
   "Serialize context and roots for persistence."
-  (let ((ctx-alist (buffer-local-value 'gptel-context gptel-context-manager--target-buffer))
-        (roots (buffer-local-value 'gptel-context-manager-roots gptel-context-manager--target-buffer))
+  (let ((ctx-alist gptel-context)
+        (roots gptel-context-manager-roots)
         (serializable-ctx nil))
     (dolist (item ctx-alist)
       (let* ((normalized (ensure-list item))
@@ -671,9 +675,6 @@ If BUFFER is nil, use `gptel-context-manager--target-buffer'."
          (mgr-target-dead (and mgr-buf
                                (not (buffer-live-p
                                      (buffer-local-value 'gptel-context-manager--target-buffer mgr-buf))))))
-    ;; Ensure the target buffer is hydrated from persistent storage before display.
-    (when (buffer-live-p target-buf)
-      (gptel-context-manager--maybe-hydrate-target-from-storage target-buf))
     ;; Ensure the target buffer is hydrated from its persistent storage before display.
     (when (buffer-live-p target-buf)
       (gptel-context-manager--maybe-hydrate-target-from-storage target-buf))
