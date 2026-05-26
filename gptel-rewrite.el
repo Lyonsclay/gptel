@@ -1,6 +1,6 @@
 ;;; gptel-rewrite.el --- Refactoring functions for gptel  -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2024  Karthik Chikmagalur
+;; Copyright (C) 2024-2026  Karthik Chikmagalur
 
 ;; Author: Karthik Chikmagalur <karthikchikmagalur@gmail.com>
 ;; Keywords: hypermedia, convenience, tools
@@ -116,7 +116,7 @@ overlay."
   "List of active rewrite overlays in the buffer.")
 
 (defvar-local gptel--rewrite-message nil
-  "Request-specific instructions for a gptel-rewrite action.")
+  "Request-specific instructions for a `gptel-rewrite' action.")
 
 ;; Add the rewrite directive to `gptel-directives'
 (unless (alist-get 'rewrite gptel-directives)
@@ -174,12 +174,61 @@ which see."
            "  Generate ONLY the replacement text,"
            " without any explanation or markdown code fences.")))))
 
+;; MAYBE: Save FSM to `gptel--fsm-last' on request end?
 (defvar gptel--rewrite-handlers
-  `((WAIT ,#'gptel--handle-wait)
-    (TOOL ,#'gptel--update-tool-call ,#'gptel--handle-tool-use))
+  `((WAIT ,#'gptel--handle-wait ,#'gptel--rewrite-update-wait)
+    (TPRE ,#'gptel--handle-pre-tool ,#'gptel--fsm-transition)
+    (TOOL ,#'gptel--rewrite-update-tool-call ,#'gptel--handle-tool-use)
+    (TRET ,#'gptel--handle-post-tool ,#'gptel--rewrite-update-tool-call
+          ,#'gptel--handle-tool-result))
   "Alist specifying FSM handlers for `gptel-rewrite' state transitions.")
 
 ;; * Helper functions
+
+;; ** UI Indicators
+(defun gptel--rewrite-update-tool-call (fsm)
+  "Update the rewrite overlay to indicate tool call progress for FSM."
+  (when-let* ((info (gptel-fsm-info fsm))
+              (ov (car-safe (plist-get info :context)))
+              (names (cl-loop for call in (plist-get info :tool-use)
+                              collect (plist-get call :name))))
+    (with-current-buffer (plist-get info :buffer)
+      (setq gptel--fsm-last fsm)
+      (gptel--rewrite-update-status
+       ov (concat
+           (propertize
+            (if (length> names 1) " Calling tools (" " Calling tool (")
+            'face '(mode-line-emphasis default))
+           (mapconcat (lambda (name) (propertize name 'face '(font-lock-keyword-face default)))
+                      names (propertize ", " 'face '(mode-line-emphasis default)))
+           (propertize ")" 'face '(mode-line-emphasis default)))))))
+
+(defun gptel--rewrite-update-wait (fsm)
+  "Update the rewrite overlay status for FSM to indicate a waiting state."
+  (when-let* ((info (gptel-fsm-info fsm))
+              (ov (car-safe (plist-get info :context)))
+              (model (gptel--model-name
+                      (or (plist-get info :model) gptel-model)))
+              (hint-str (concat "[" model "]\n")))
+    (overlay-put
+     ov 'status
+     (list (propertize "REWRITE" 'face '(warning default))     ;status element 0
+           (propertize " Waiting..." 'face '(warning default)) ;status element 1
+           (propertize                                         ;status element 2
+            " " 'display
+            (if (fboundp 'string-pixel-width)
+                `(space :align-to (- right (,(string-pixel-width hint-str))))
+              `(space :align-to (- right ,(+ 1 (string-width hint-str))))))
+           (propertize hint-str 'face '(warning default)))) ;status element 3
+    (overlay-put ov 'before-string (apply #'concat (overlay-get ov 'status)))))
+
+(defun gptel--rewrite-update-status (ov msg &optional face)
+  "Update overlay OV's status with MSG and refresh its before-string.
+If FACE is non-nil, apply that face to MSG when storing the status."
+  (setq msg (or msg ""))
+  (setf (cadr (overlay-get ov 'status))
+        (if face (propertize msg 'face face) msg))
+  (overlay-put ov 'before-string (apply #'concat (overlay-get ov 'status))))
 
 (defun gptel--rewrite-key-help (callback)
   "Eldoc documentation function for gptel rewrite actions.
@@ -191,6 +240,8 @@ CALLBACK is supplied by Eldoc, see
       (funcall callback
                (format (substitute-command-keys "%s rewrite available: accept \\[gptel--rewrite-accept], iterate \\[gptel--rewrite-iterate], clear \\[gptel--rewrite-reject], merge \\[gptel--rewrite-merge], diff \\[gptel--rewrite-diff] or ediff \\[gptel--rewrite-ediff]")
                        (propertize (gptel--model-name gptel-model) 'face 'mode-line-emphasis)))))
+
+;; ** Navigation across rewrite regions
 
 (defun gptel--rewrite-move (search-func)
   "Move directionally to a gptel rewrite location using SEARCH-FUNC."
@@ -217,6 +268,8 @@ CALLBACK is supplied by Eldoc, see
   (interactive)
   (gptel--rewrite-move #'previous-single-char-property-change))
 
+;; ** Rewrite actions helpers
+
 (defun gptel--rewrite-overlay-at (&optional pt)
   "Check for a gptel rewrite overlay at PT and return it.
 
@@ -224,8 +277,8 @@ If no suitable overlay is found, raise an error."
   (pcase-let ((`(,response . ,ov)
                (get-char-property-and-overlay (or pt (point)) 'gptel-rewrite))
               (diff-entire-buffers nil))
-    (unless ov (user-error "Could not find region being rewritten."))
-    (unless response (user-error "No LLM output available for this rewrite."))
+    (unless ov (user-error "Could not find region being rewritten"))
+    (unless response (user-error "No LLM output available for this rewrite"))
     ov))
 
 (defun gptel--rewrite-prepare-buffer (ovs &optional buf)
@@ -234,7 +287,7 @@ If no suitable overlay is found, raise an error."
 This is used for (e)diff purposes.
 
 RESPONSE is the LLM response.  OVS are the overlays specifying
-the changed regions. BUF is the (current) buffer."
+the changed regions.  BUF is the (current) buffer."
   (setq buf (or buf (overlay-buffer (or (car-safe ovs) ovs))))
   (with-current-buffer buf
     (let ((pmin (point-min))
@@ -260,8 +313,10 @@ the changed regions. BUF is the (current) buffer."
       newbuf)))
 
 (defun gptel--rewrite-read-message (prompt &optional _ history)
-  "Read a rewrite message from the minibuffer with custom keybindings for
-cycling, editing, and submitting the gptel rewrite.
+  "Read a rewrite message from the minibuffer.
+
+Provide custom keybindings for cycling, editing, and submitting the
+`gptel-rewrite' action directly from this prompt.
 
 PROMPT is the prompt string to display.  HISTORY, if provided, is the
 input history list."
@@ -281,12 +336,12 @@ input history list."
                     (delete-dups (cons message transient--history))))))
          (start-rewrite-maybe
           (lambda () (interactive)
+            (when (minibufferp) (funcall set-rewrite-message))
             (if transient--prefix    ;Called from transient? Don't start rewrite
                 (run-at-time 0 nil #'transient-setup 'gptel-rewrite)
-              (run-at-time 0 nil #'gptel--suffix-rewrite gptel--rewrite-message))
-            (when (minibufferp)
-              (funcall set-rewrite-message)
-              (exit-minibuffer))))
+              (with-current-buffer cb
+                (gptel--suffix-rewrite gptel--rewrite-message)))
+            (when (minibufferp) (exit-minibuffer))))
          (start-transient
           (lambda () (interactive)
             (run-at-time 0 nil #'transient-setup 'gptel-rewrite)
@@ -302,9 +357,9 @@ input history list."
                 :callback
                 (lambda (msg)
                   (when msg
-                    (run-at-time 0 nil #'gptel--suffix-rewrite)
                     (push (buffer-local-value 'gptel--rewrite-message cb)
-                          (alist-get 'gptel--infix-rewrite-extra transient-history)))
+                          (alist-get 'gptel--infix-rewrite-extra transient-history))
+                    (with-current-buffer cb (gptel--suffix-rewrite)))
                   (when (minibufferp) (exit-minibuffer)))))))
          (minibuffer-local-map
           (make-composed-keymap (define-keymap
@@ -343,11 +398,10 @@ BUF is the buffer to modify, defaults to the overlay buffer."
                for ov-beg = (overlay-start ov)
                for ov-end = (overlay-end ov)
                for response = (overlay-get ov 'gptel-rewrite)
-               do (overlay-put ov 'before-string nil)
-               (with-current-buffer buf
-                 (goto-char ov-beg)
-                 (delete-region ov-beg ov-end)
-                 (insert response))))
+               do (with-current-buffer buf
+                    (goto-char ov-beg)
+                    (delete-region ov-beg ov-end)
+                    (insert response))))
     (message "Replaced region(s) with LLM output in buffer: %s."
              (buffer-name ov-buf))))
 
@@ -355,7 +409,9 @@ BUF is the buffer to modify, defaults to the overlay buffer."
   "Iterate on pending LLM response at point.")
 
 (defun gptel--rewrite-diff (&optional ovs switches)
-  "Diff pending LLM responses in OVS or at point."
+  "Diff pending LLM responses in OVS or at point.
+
+SWITCHES are diff arguments."
   (interactive (list (gptel--rewrite-overlay-at)))
   (when-let* ((ov-buf (overlay-buffer (or (car-safe ovs) ovs)))
               ((buffer-live-p ov-buf)))
@@ -389,7 +445,7 @@ BUF is the buffer to modify, defaults to the overlay buffer."
                 (funcall hideshow 'restore)
                 (remove-hook 'ediff-quit-hook gptel--ediff-restore))))
       (funcall hideshow)
-      (add-hook 'ediff-quit-hook gptel--ediff-restore)
+      (add-hook 'ediff-quit-hook gptel--ediff-restore 50)
       (let ((ediff-window-setup-function #'ediff-setup-windows-plain)
             (ediff-split-window-function #'split-window-horizontally))
         (ediff-buffers ov-buf newbuf)))))
@@ -452,23 +508,18 @@ NEW-STR is the new string intended to replace the region."
 
 OV is the rewrite overlay, CI is true for interactive calls."
   (interactive (list (gptel--rewrite-overlay-at) t))
-  (let ((choice))
+  (let ((choice)
+        (orig-status (copy-sequence (overlay-get ov 'status))))
     (unwind-protect
         (pcase-let ((choices '((?a "accept") (?k "reject") (?r "iterate")
-                               (?m "merge") (?d "diff") (?e "ediff")))
-                    (hint-str (concat "[" (gptel--model-name gptel-model) "]\n")))
-          (overlay-put
-           ov 'before-string
-           (concat
-            (unless (eq (char-before (overlay-start ov)) ?\n) "\n")
-            (propertize "REWRITE READY: " 'face 'success)
-	    (when (fboundp #'rmc--add-key-description)  ; introduced in Emacs 29
-              (mapconcat (lambda (e) (cdr e)) (mapcar #'rmc--add-key-description choices) ", "))
-            (propertize
-             " " 'display `(space :align-to (- right ,(1+ (length hint-str)))))
-            (propertize hint-str 'face 'success)))
+                               (?m "merge") (?d "diff") (?e "ediff"))))
+          (gptel--rewrite-update-status
+           ov (when (fboundp #'rmc--add-key-description) ; introduced in Emacs 29
+                (concat " " (mapconcat (lambda (e) (cdr e))
+                                       (mapcar #'rmc--add-key-description choices) ", "))))
           (setq choice (read-multiple-choice "Action: " choices)))
-      (overlay-put ov 'before-string nil))
+      (overlay-put ov 'status orig-status)
+      (overlay-put ov 'before-string (apply #'concat orig-status)))
     (if ci
         (call-interactively (intern (concat "gptel--rewrite-" (cadr choice))))
       (funcall (intern (concat "gptel--rewrite-" (cadr choice))) ov))))
@@ -495,6 +546,7 @@ INFO is the async communication channel for the rewrite request."
           (when (= (buffer-size) 0)
             (buffer-disable-undo)
             (overlay-put ov 'gptel-rewrite nil)
+            (gptel--rewrite-update-status ov " Typing..." '(success default))
             (insert-buffer-substring buf (overlay-start ov) (overlay-end ov))
             (when (eq (char-before (point-max)) ?\n)
               (plist-put info :newline t))
@@ -504,7 +556,7 @@ INFO is the async communication channel for the rewrite request."
           (insert response)
           (unless (eobp) (ignore-errors (delete-char (length response))))
           (font-lock-ensure)
-          (overlay-put ov 'display (buffer-string))))
+          (overlay-put ov 'display (propertize (buffer-string) 'face 'default))))
       (unless (plist-get info :stream) (gptel--rewrite-callback t info)))
 
      ((eq response 'abort)              ;request aborted
@@ -513,13 +565,21 @@ INFO is the async communication channel for the rewrite request."
       (delete-overlay ov))
 
      ((eq (car-safe response) 'tool-call) ;tool call confirmation
-      (gptel--display-tool-calls          ;use minibuffer if buffer is read-only
-       (cdr response) info (buffer-local-value 'buffer-read-only buf)))
+      (gptel--rewrite-update-status ov " Run tools?" '(mode-line-emphasis default))
+      (gptel--display-tool-calls   ;use minibuffer
+       (cdr response) info         ;; (buffer-local-value 'buffer-read-only buf)
+       t))
 
      ((null response)                   ;finished with error
       (message (concat "LLM response error: %s. Rewrite in buffer %s canceled.")
                (plist-get info :status) (plist-get info :buffer))
       (gptel--rewrite-callback 'abort info))
+
+     ((eq (car-safe response) 'reasoning) ;Reasoning redirection to other buffer
+      (and-let* ((rbuf (plist-get info :include-reasoning)))
+        (and (stringp rbuf) (buffer-live-p (get-buffer rbuf))
+             (gptel--display-reasoning-stream (cdr response) info)))
+      t)
 
      ((consp response))             ;reasoning or tool call result -- don't care
 
@@ -552,6 +612,11 @@ INFO is the async communication channel for the rewrite request."
 	      (overlay-put ov 'priority 2000)
               (overlay-put ov 'keymap gptel-rewrite-actions-map)
               (overlay-put ov 'mouse-face 'highlight)
+              (let ((status (overlay-get ov 'status)))
+                (dolist (idx '(0 1 3))
+                  (setf (nth idx status)
+                        (propertize (nth idx status) 'face '(success default))))
+                (gptel--rewrite-update-status ov " Ready" '(success default)))
               (overlay-put
                ov 'help-echo
                (format (concat "%s rewrite available: %s or \\[gptel--rewrite-dispatch] for options")
@@ -591,12 +656,14 @@ By default, gptel uses the directive associated with the `rewrite'
 ;;;###autoload (autoload 'gptel-rewrite "gptel-rewrite" nil t)
 (transient-define-prefix gptel-rewrite ()
   "Rewrite or refactor text region using an LLM."
+  :environment #'gptel--transient-fix-evil-visual
   [:description
    (lambda ()
      (gptel--describe-directive
       gptel--rewrite-directive (max (- (window-width) 14) 20) " "))
    [""
-    (gptel--preset
+    (gptel-preset
+     :transient t
      :if (lambda () (or (get-char-property (point) 'gptel-rewrite)
                    (use-region-p)))
      :key "@" :format "%d"
@@ -666,7 +733,7 @@ By default, gptel uses the directive associated with the `rewrite'
    (gptel--rewrite-overlays             ;Rewrite actions pending, show options
     (transient-setup 'gptel-rewrite))
    (t (user-error
-       "`gptel-rewrite' requires an active region or rewrite in progress."))))
+       "`gptel-rewrite' requires an active region or rewrite in progress"))))
 
 ;; * Transient infixes for rewriting
 
@@ -733,7 +800,6 @@ generated from functions."
              :context
              (let ((ov (or (cdr-safe (get-char-property-and-overlay (point) 'gptel-rewrite))
                            (make-overlay (region-beginning) (region-end) nil t))))
-               (overlay-put ov 'category 'gptel)
                (overlay-put ov 'evaporate t)
                ;; NOTE: Switch to `generate-new-buffer' after we drop Emacs 27.1 (#724)
                (cons ov (gptel--temp-buffer " *gptel-rewrite*")))
@@ -742,8 +808,8 @@ generated from functions."
              :callback #'gptel--rewrite-callback)
       ;; Move back so that the cursor is on the overlay when done.
       (unless (get-char-property (point) 'gptel-rewrite)
-        (when (= (point) (region-end)) (backward-char 1)))
-      (deactivate-mark))))
+        (when (= (point) (region-end)) (run-at-time 0 nil #'backward-char 1)))
+      (setq deactivate-mark t))))
 
 ;; Allow this to be called non-interactively for dry runs
 (put 'gptel--suffix-rewrite 'interactive-only nil)
@@ -765,7 +831,7 @@ generated from functions."
   (gptel--rewrite-ediff gptel--rewrite-overlays))
 
 (transient-define-suffix gptel--suffix-rewrite-merge ()
-  "Insert LLM output as merge conflicts"
+  "Insert LLM output as merge conflicts."
   :if (lambda () gptel--rewrite-overlays)
   :key "M"
   :description "Merge with conflicts"
